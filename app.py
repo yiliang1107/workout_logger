@@ -1,6 +1,6 @@
 """
 Gradio Workout Logger — 單檔可執行
-需求：
+需求
 1) Date 預設今天、可修改
 2) item：6 個可填，輸入過的動作會記憶成下拉選項（可自訂新值）
 3) 每個 item 有 5 組 set（每組 kg + reps）
