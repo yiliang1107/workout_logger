@@ -1,6 +1,6 @@
 """
 Gradio Workout Logger — 單檔可執行
-需求
+需求：
 1) Date 預設今天、可修改
 2) item：6 個可填，輸入過的動作會記憶成下拉選項（可自訂新值）
 3) 每個 item 有 5 組 set（每組 kg + reps）
@@ -91,7 +91,7 @@ def save_button_clicked(date_str: str,
         # 支援 "YYYY-MM-DD" 或 "YYYY/MM/DD" 等
         dt = pd.to_datetime(date_str).date()
     except Exception:
-        return gr.Info("日期格式錯誤，請用 YYYY-MM-DD"), gr.update(), gr.update()
+        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), pd.DataFrame()
 
     # 將展平的輸入回填為每個 item 的結構
     block_size = 1 + (NUM_SETS * 2) + 1  # item 名稱 + 10 個 set 欄 + note
@@ -135,7 +135,7 @@ def save_button_clicked(date_str: str,
         })
 
     if not rows:
-        return gr.Info("沒有可存的資料：請至少填一個 Item 名稱"), gr.update(), gr.update()
+        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), pd.DataFrame()
 
     # 追加寫入 CSV
     append_records(rows)
@@ -147,7 +147,7 @@ def save_button_clicked(date_str: str,
 
     # 回傳訊息與最新的記錄總覽
     df = pd.read_csv(RECORDS_CSV)
-    return (gr.Info(f"已儲存 {len(rows)} 筆（日期：{dt.isoformat()}）。"),
+    return (f"已儲存 {len(rows)} 筆（日期：{dt.isoformat()}）。",
             gr.update(choices=merged),
             df.tail(20))
 
@@ -218,6 +218,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft()) as demo:
                     note_inputs.append(note)
 
             save_btn = gr.Button("💾 Save", variant="primary")
+            status_md = gr.Markdown("")
             latest_df = gr.Dataframe(headers=None, value=pd.DataFrame(), wrap=True, interactive=False, label="最近 20 筆紀錄")
 
             # 彙整所有輸入順序：
@@ -231,7 +232,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft()) as demo:
             save_btn.click(
                 fn=save_button_clicked,
                 inputs=[date_in, *flat_all_inputs],
-                outputs=[gr.Info(), item_dropdowns[0], latest_df],
+                outputs=[status_md, item_dropdowns[0], latest_df],
             )
 
         with gr.TabItem("Records"):
