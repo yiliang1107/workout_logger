@@ -276,6 +276,18 @@ def write_local_df(df: pd.DataFrame):
 
 # ------------ 優先雲端 ------------
 
+def cloud_status_line() -> str:
+    df = read_cloud_df()
+    target = CLOUD_WS_TITLE or SHEET_TITLE_ENV
+    cloud_status = "已連線至雲端試算表 ✅" if df is not None else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
+    try:
+        count = 0 if df is None else len(df)
+    except Exception:
+        count = 0
+    return f"**Cloud**：{cloud_status}，分頁：{target}，目前列數：{count}"
+
+# ------------ 優先雲端 ------------
+
 def load_records_df() -> pd.DataFrame:
     df = read_cloud_df()
     if df is not None:
@@ -361,11 +373,11 @@ def save_button_clicked(date_str: str, item_name: str,
     try:
         dt = pd.to_datetime(date_str).date()
     except Exception:
-        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), pd.DataFrame(), gr.update()
+        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), pd.DataFrame(), gr.update(), cloud_status_line()
 
     item_name = (item_name or "").strip()
     if not item_name:
-        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), pd.DataFrame(), gr.update()
+        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), pd.DataFrame(), gr.update(), cloud_status_line()
 
     # 解析數值
     def to_f(x):
@@ -417,7 +429,7 @@ def save_button_clicked(date_str: str, item_name: str,
         if not latest.empty and "note" in latest.columns:
             cols = [c for c in latest.columns if c != "note"] + ["note"]
             latest = latest[cols]
-        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=False))
+        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=False), cloud_status_line())
 
     replaced = False
     if recent_row is not None:
@@ -455,7 +467,7 @@ def save_button_clicked(date_str: str, item_name: str,
         cols = [c for c in latest.columns if c != "note"] + ["note"]
         latest = latest[cols]
 
-    return (msg, gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=True))
+    return (msg, gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=True), cloud_status_line())
 
 
 # ------------ 搜尋（直接讀雲端，失敗則備援） ------------
@@ -548,12 +560,8 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
     gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
 快速記錄重量訓練與查詢歷史。""")
 
-    # 雲端狀態提示（包含目標分頁）
-    _df_probe = read_cloud_df()
-    target = CLOUD_WS_TITLE or SHEET_TITLE_ENV
-    cloud_status = "已連線至雲端試算表 ✅" if _df_probe is not None else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
-    rows_info = f"，分頁：{target}，目前列數：{len(_df_probe) if _df_probe is not None else 0}"
-    gr.Markdown(f"**Cloud**：{cloud_status}{rows_info}")
+    # 雲端狀態提示（可動態更新）
+    cloud_md = gr.Markdown(cloud_status_line())
 
     with gr.Tabs():
         # ---- Log ----
@@ -594,7 +602,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
                 inputs=[date_in, item_dd,
                         set1kg, set1rp, set2kg, set2rp, set3kg, set3rp, set4kg, set4rp, set5kg, set5rp,
                         note_in],
-                outputs=[status_md, item_dd, latest_df, save_btn],
+                outputs=[status_md, item_dd, latest_df, save_btn, cloud_md],
             )
 
         # ---- Records ----
