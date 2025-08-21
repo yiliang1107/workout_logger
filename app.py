@@ -631,4 +631,4 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 if __name__ == "__main__":
     if not RECORDS_CSV.exists():
         ensure_records_csv()
-    demo.launch()
+     demo.launch()
