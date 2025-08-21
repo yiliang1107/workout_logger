@@ -312,6 +312,81 @@ def to_tpe_time_str(created_at: str) -> str:
             return ""
     try:
         tpe = ts.tz_convert('Asia/Taipei')
+        hour24 = int(tpe.strftime('%H'))
+        minute = tpe.strftime('%M')
+        if 18 <= hour24 <= 23:
+            period = '晚上'
+        elif 12 <= hour24 <= 17:
+            period = '下午'
+        else:
+            period = '上午'
+        # 全部統一 12 小時制，並移除小時的前導 0
+        hour12 = ((hour24 - 1) % 12) + 1
+        return f"{period} {hour12}:{minute}"
+    except Exception:
+        return ""
+    try:
+        ts = pd.to_datetime(created_at, utc=True)
+    except Exception:
+        try:
+            ts = pd.to_datetime(created_at)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+        except Exception:
+            return ""
+    try:
+        tpe = ts.tz_convert('Asia/Taipei')
+        hour24 = int(tpe.strftime('%H'))
+        minute = tpe.strftime('%M')  # 保留兩位數
+        if 18 <= hour24 <= 23:
+            period = '晚上'
+        elif 12 <= hour24 <= 17:
+            period = '下午'
+        else:
+            period = '上午'
+        # 12 小時制（1..12），移除小時前導零
+        hour12 = ((hour24 - 1) % 12) + 1
+        return f"{period} {hour12}:{minute}"
+    except Exception:
+        return ""
+    try:
+        ts = pd.to_datetime(created_at, utc=True)
+    except Exception:
+        try:
+            ts = pd.to_datetime(created_at)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+        except Exception:
+            return ""
+    try:
+        tpe = ts.tz_convert('Asia/Taipei')
+        hour24 = int(tpe.strftime('%H'))
+        minute = tpe.strftime('%M')
+        if 18 <= hour24 <= 23:
+            period = '晚上'
+        elif 12 <= hour24 <= 17:
+            period = '下午'
+        else:
+            period = '上午'
+        if period in ('下午', '晚上'):
+            hour12 = ((hour24 - 1) % 12) + 1  # 12→12, 13→1, 18→6
+            return f"{period} {hour12}:{minute}"
+        else:
+            # 上午維持 24 小時 HH:MM 顯示
+            return f"{period} {tpe.strftime('%H:%M')}"
+    except Exception:
+        return ""
+    try:
+        ts = pd.to_datetime(created_at, utc=True)
+    except Exception:
+        try:
+            ts = pd.to_datetime(created_at)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+        except Exception:
+            return ""
+    try:
+        tpe = ts.tz_convert('Asia/Taipei')
         hour = int(tpe.strftime('%H'))
         if 18 <= hour <= 23:
             period = '晚上'
