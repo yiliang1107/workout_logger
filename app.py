@@ -6,7 +6,7 @@ Gradio Workout Logger + 你的教練（Groq）— app.py（行動版 Note 顯示
 - Google Sheet 的儲存格式維持原本欄位（note 為單一欄），只是在 UI 以兩列呈現。
 """
 from __future__ import annotations
-import os, json, hashlib, html
+import os, json, hashlib, html, math
 from pathlib import Path
 from typing import List, Optional, Tuple
 from datetime import datetime, date, timedelta, timezone
@@ -288,16 +288,39 @@ def _pretty_name(col: str) -> str:
 
 
 def _fmt_num(n):
-    if n in (None, ""):
+    if n in (None, "", "nan", "NaN", "NAN"):
         return ""
     try:
         f = float(n)
-        return str(int(f)) if f.is_integer() else str(f)
+        if math.isnan(f):
+            return ""
+        return str(int(f)) if float(f).is_integer() else str(f)
     except Exception:
         return str(n)
 
 def to_tpe_time_str(created_at: str) -> str:
     if not created_at:
+        return ""
+    try:
+        ts = pd.to_datetime(created_at, utc=True)
+    except Exception:
+        try:
+            ts = pd.to_datetime(created_at)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+        except Exception:
+            return ""
+    try:
+        tpe = ts.tz_convert('Asia/Taipei')
+        hour = int(tpe.strftime('%H'))
+        if 18 <= hour <= 23:
+            period = '晚上'
+        elif 12 <= hour <= 17:
+            period = '下午'
+        else:
+            period = '上午'
+        return f"{period} {tpe.strftime('%H:%M')}"
+    except Exception:
         return ""
     try:
         ts = pd.to_datetime(created_at, utc=True)
@@ -337,7 +360,7 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
             rp_txt = (rp + "r") if rp else ""
             lines.append(f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>")
         lines_html = "".join(lines)
-        note_row = f"<tr class='note-row'><td class='note-cell' colspan='3'><div class='note-text'><b>Note：</b>{html.escape(str(note_s))}</div><div class='time'>{html.escape(time_tpe)}</div></td></tr>"
+        note_row = f"<tr class='note-row'><td class='note-cell' colspan='3'><b>Note：</b>{html.escape(str(note_s))}<span class='time'>（{html.escape(time_tpe)}）</span></td></tr>"
         card = f"""
         <div class='rec-card'>
           <div class='rec-header'>
@@ -540,8 +563,8 @@ CSS = """
 .rec-sets td.sidx { width: 26px; text-align: center; opacity: .8; }
 .rec-sets td.kg, .rec-sets td.r { width: 56px; }
 .note-row td { background: rgba(255,255,255,0.04); }
-.rec-sets td.note-cell { padding: 6px; display:flex; justify-content:space-between; align-items:flex-end; gap:8px; }
-.rec-sets td.note-cell .time { opacity:.75; font-size:.9em; white-space:nowrap; }
+.rec-sets td.note-cell { padding: 8px 6px; }
+.rec-sets td.note-cell .time { margin-left: .5em; opacity:.65; font-size:.9em; }
 @media (max-width: 480px) {
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
