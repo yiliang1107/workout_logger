@@ -9,7 +9,7 @@ from __future__ import annotations
 import os, json, hashlib, html
 from pathlib import Path
 from typing import List, Optional, Tuple
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 # ---- Groq 安裝/匯入 ----
 try:
@@ -296,6 +296,23 @@ def _fmt_num(n):
     except Exception:
         return str(n)
 
+def to_tpe_time_str(created_at: str) -> str:
+    if not created_at:
+        return ""
+    try:
+        ts = pd.to_datetime(created_at, utc=True)
+    except Exception:
+        try:
+            ts = pd.to_datetime(created_at)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+        except Exception:
+            return ""
+    try:
+        return ts.tz_convert('Asia/Taipei').strftime('%H:%M')
+    except Exception:
+        return ""
+
 def df_to_html_compact5(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return "<div class='records-empty'>目前沒有紀錄</div>"
@@ -310,6 +327,7 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
         note_s = row.get("note", "") or ""
         total_s = _fmt_num(row.get("total_volume_kg", ""))
         created_s = row.get("created_at", "") or ""
+        time_tpe = to_tpe_time_str(created_s)
         # 五行：set1..set5，每行兩格（kg / r）
         lines = []
         for i in range(1, NUM_SETS+1):
@@ -328,7 +346,7 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
           <table class='rec-sets'>
             <tbody>
               <tr>
-                <td class='note' rowspan='{NUM_SETS}'><b>Note：</b>{html.escape(str(note_s))}</td>
+                <td class='note' rowspan='{NUM_SETS}'><div class='note-text'><b>Note：</b>{html.escape(str(note_s))}</div><div class='time'>{html.escape(time_tpe)}</div></td>
                 <td class='sidx'>1</td>
                 <td class='kg nowrap'>{(_fmt_num(row.get('set1_kg')) + 'kg') if _fmt_num(row.get('set1_kg')) else ''}</td>
                 <td class='r nowrap'>{(_fmt_num(row.get('set1_reps')) + 'r') if _fmt_num(row.get('set1_reps')) else ''}</td>
@@ -336,7 +354,6 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
               {lines_html}
             </tbody>
           </table>
-          <div class='meta'>{html.escape(str(created_s))}</div>
         </div>
         """
         cards.append(card)
@@ -371,14 +388,14 @@ def save_button_clicked(date_str: str, item_name: str,
         sets_kv[f"set{idx}_reps"] = rp
 
     total_volume = compute_total_volume(kg_vals, reps_vals)
-    now = datetime.now()
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
     new_row = {
         "date": dt.isoformat(),
         "item": item_name,
         **sets_kv,
         "note": note or "",
         "total_volume_kg": total_volume,
-        "created_at": now.isoformat(timespec="seconds"),
+        "created_at": now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
     }
     new_hash = hash_entry(new_row)
 
@@ -524,10 +541,10 @@ CSS = """
 .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rec-sets { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .rec-sets td { border: 1px solid rgba(255,255,255,0.15); padding: 4px; vertical-align: top; }
-.rec-sets td.note { width: 65%; }
+.rec-sets td.note { width: 65%; display:flex; flex-direction:column; justify-content:space-between; gap:4px; }
 .rec-sets td.sidx { width: 26px; text-align: center; opacity: .8; }
 .rec-sets td.kg, .rec-sets td.r { width: 56px; }
-.meta { margin-top: 4px; opacity: .6; font-size: .9em; }
+.rec-sets td.note .time { align-self:flex-end; opacity:.7; font-size:.9em; }
 @media (max-width: 480px) {
   .rec-sets td.note { width: 70%; }
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
