@@ -287,34 +287,60 @@ def _pretty_name(col: str) -> str:
     return mapping.get(col, col)
 
 
-def df_to_html_stacked(df: pd.DataFrame) -> str:
+def _fmt_num(n):
+    if n in (None, ""):
+        return ""
+    try:
+        f = float(n)
+        return str(int(f)) if f.is_integer() else str(f)
+    except Exception:
+        return str(n)
+
+def df_to_html_compact5(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return "<div class='records-empty'>目前沒有紀錄</div>"
     # 確保 note 在最後
     if "note" in df.columns:
         cols = [c for c in df.columns if c != "note"] + ["note"]
         df = df[cols]
-    first_cols = [c for c in df.columns if c != "note"]
-    ncols = len(first_cols)
-    # 表頭
-    thead = "<tr>" + "".join(f"<th>{html.escape(_pretty_name(c))}</th>" for c in first_cols) + "</tr>"
-    # 資料列
-    body_rows = []
+    cards = []
     for _, row in df.iterrows():
-        tds = []
-        for c in first_cols:
-            val = row.get(c, "")
-            if pd.isna(val):
-                val = ""
-            tds.append(f"<td>{html.escape(str(val))}</td>")
-        first = "<tr>" + "".join(tds) + "</tr>"
-        note_text = row.get("note", "")
-        if pd.isna(note_text):
-            note_text = ""
-        second = f"<tr class='note-row sep'><td colspan='{ncols}'><b>Note：</b>{html.escape(str(note_text))}</td></tr>"
-        body_rows.append(first + second)
-    tbody = "".join(body_rows)
-    return f"<div class='records-scroll'><table class='records-table'><thead>{thead}</thead><tbody>{tbody}</tbody></table></div>"
+        date_s = row.get("date", "") or ""
+        item_s = row.get("item", "") or ""
+        note_s = row.get("note", "") or ""
+        total_s = _fmt_num(row.get("total_volume_kg", ""))
+        created_s = row.get("created_at", "") or ""
+        # 五行：set1..set5，每行兩格（kg / r）
+        lines = []
+        for i in range(1, NUM_SETS+1):
+            kg = _fmt_num(row.get(f"set{i}_kg", ""))
+            rp = _fmt_num(row.get(f"set{i}_reps", ""))
+            kg_txt = (kg + "kg") if kg else ""
+            rp_txt = (rp + "r") if rp else ""
+            lines.append(f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>")
+        lines_html = "".join(lines[1:])
+        card = f"""
+        <div class='rec-card'>
+          <div class='rec-header'>
+            <div class='left nowrap'>{html.escape(str(date_s))} · {html.escape(str(item_s))}</div>
+            <div class='right nowrap'>{('Σ ' + html.escape(total_s) + ' kg') if total_s else ''}</div>
+          </div>
+          <table class='rec-sets'>
+            <tbody>
+              <tr>
+                <td class='note' rowspan='{NUM_SETS}'><b>Note：</b>{html.escape(str(note_s))}</td>
+                <td class='sidx'>1</td>
+                <td class='kg nowrap'>{(_fmt_num(row.get('set1_kg')) + 'kg') if _fmt_num(row.get('set1_kg')) else ''}</td>
+                <td class='r nowrap'>{(_fmt_num(row.get('set1_reps')) + 'r') if _fmt_num(row.get('set1_reps')) else ''}</td>
+              </tr>
+              {lines_html}
+            </tbody>
+          </table>
+          <div class='meta'>{html.escape(str(created_s))}</div>
+        </div>
+        """
+        cards.append(card)
+    return "<div class='records-cards'>" + "".join(cards) + "</div>"
 
 # ------------ 儲存（覆寫與重複判斷 + 回傳 HTML） ------------
 
@@ -377,7 +403,7 @@ def save_button_clicked(date_str: str, item_name: str,
     if recent_row is not None and hash_entry(recent_row) == new_hash:
         merged_choices = get_all_item_choices()
         latest = load_records_df()
-        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), df_to_html_stacked(latest.tail(20)), gr.update(interactive=False), cloud_status_line())
+        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), df_to_html_compact5(latest.tail(20)), gr.update(interactive=False), cloud_status_line())
 
     replaced = False
     if recent_row is not None:
@@ -412,7 +438,7 @@ def save_button_clicked(date_str: str, item_name: str,
 
     merged_choices = get_all_item_choices()
     latest = load_records_df()
-    return (msg, gr.update(choices=merged_choices), df_to_html_stacked(latest.tail(20)), gr.update(interactive=True), cloud_status_line())
+    return (msg, gr.update(choices=merged_choices), df_to_html_compact5(latest.tail(20)), gr.update(interactive=True), cloud_status_line())
 
 # ------------ 搜尋 ------------
 
@@ -444,7 +470,7 @@ def search_records(date_from: str, date_to: str, item_filter: str):
 
 
 def search_records_html(date_from: str, date_to: str, item_filter: str):
-    return df_to_html_stacked(search_records(date_from, date_to, item_filter))
+    return df_to_html_compact5(search_records(date_from, date_to, item_filter))
 
 # ------------ 教練機器人（串流） ------------
 
@@ -490,12 +516,22 @@ def coach_chat_stream(history: list[list[str]], user_msg: str):
 
 # ------------ CSS（行動版友善 Note 顯示）------------
 CSS = """
-.records-scroll { max-height: 60vh; overflow-y: auto; }
-.records-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.records-table th, .records-table td { border: 1px solid rgba(255,255,255,0.12); padding: 6px; vertical-align: top; word-break: break-word; }
-.records-table th { position: sticky; top: 0; background: rgba(255,255,255,0.04); backdrop-filter: blur(2px); }
-.records-table .note-row td { background: rgba(255,255,255,0.03); font-style: italic; }
-.records-table .sep td { border-bottom: 3px solid rgba(255,255,255,0.35); }
+.records-cards { display: grid; gap: 10px; }
+.rec-card { border-bottom: 4px solid rgba(255,255,255,0.35); padding: 8px 6px; }
+.rec-header { display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.rec-header .left { font-weight: 600; }
+.rec-header .right { opacity: .8; font-size: .95em; }
+.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-sets { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.rec-sets td { border: 1px solid rgba(255,255,255,0.15); padding: 4px; vertical-align: top; }
+.rec-sets td.note { width: 65%; }
+.rec-sets td.sidx { width: 26px; text-align: center; opacity: .8; }
+.rec-sets td.kg, .rec-sets td.r { width: 56px; }
+.meta { margin-top: 4px; opacity: .6; font-size: .9em; }
+@media (max-width: 480px) {
+  .rec-sets td.note { width: 70%; }
+  .rec-sets td.kg, .rec-sets td.r { width: 48px; }
+}
 """
 
 # ------------ 介面 ------------
@@ -537,7 +573,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
             save_btn = gr.Button("💾 Save", variant="primary")
             status_md = gr.Markdown("")
             current_df = load_records_df()
-            latest_html = gr.HTML(value=df_to_html_stacked(current_df.tail(20)) if not current_df.empty else "", label="最近 20 筆紀錄")
+            latest_html = gr.HTML(value=df_to_html_compact5(current_df.tail(20)) if not current_df.empty else "", label="最近 20 筆紀錄")
 
             save_btn.click(
                 fn=save_button_clicked,
@@ -554,7 +590,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
                 q_to = gr.Textbox(label="To (YYYY-MM-DD)")
                 q_item = gr.Textbox(label="Item 包含（關鍵字）")
             query_btn = gr.Button("🔎 Search")
-            out_html = gr.HTML(value=df_to_html_stacked(load_records_df()), label="搜尋結果")
+            out_html = gr.HTML(value=df_to_html_compact5(load_records_df()), label="搜尋結果")
             query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
 
         # ---- 你的教練 ----
