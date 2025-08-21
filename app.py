@@ -336,7 +336,8 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
             kg_txt = (kg + "kg") if kg else ""
             rp_txt = (rp + "r") if rp else ""
             lines.append(f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>")
-        lines_html = "".join(lines[1:])
+        lines_html = "".join(lines)
+        note_row = f"<tr class='note-row'><td class='note-cell' colspan='3'><div class='note-text'><b>Note：</b>{html.escape(str(note_s))}</div><div class='time'>{html.escape(time_tpe)}</div></td></tr>"
         card = f"""
         <div class='rec-card'>
           <div class='rec-header'>
@@ -345,13 +346,8 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
           </div>
           <table class='rec-sets'>
             <tbody>
-              <tr>
-                <td class='note' rowspan='{NUM_SETS}'><div class='note-text'><b>Note：</b>{html.escape(str(note_s))}</div><div class='time'>{html.escape(time_tpe)}</div></td>
-                <td class='sidx'>1</td>
-                <td class='kg nowrap'>{(_fmt_num(row.get('set1_kg')) + 'kg') if _fmt_num(row.get('set1_kg')) else ''}</td>
-                <td class='r nowrap'>{(_fmt_num(row.get('set1_reps')) + 'r') if _fmt_num(row.get('set1_reps')) else ''}</td>
-              </tr>
               {lines_html}
+              {note_row}
             </tbody>
           </table>
         </div>
@@ -541,12 +537,12 @@ CSS = """
 .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rec-sets { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .rec-sets td { border: 1px solid rgba(255,255,255,0.15); padding: 4px; vertical-align: top; }
-.rec-sets td.note { width: 65%; display:flex; flex-direction:column; justify-content:space-between; gap:4px; }
 .rec-sets td.sidx { width: 26px; text-align: center; opacity: .8; }
 .rec-sets td.kg, .rec-sets td.r { width: 56px; }
-.rec-sets td.note .time { align-self:flex-end; opacity:.7; font-size:.9em; }
+.note-row td { background: rgba(255,255,255,0.04); }
+.rec-sets td.note-cell { padding: 6px; display:flex; justify-content:space-between; align-items:flex-end; gap:8px; }
+.rec-sets td.note-cell .time { opacity:.75; font-size:.9em; white-space:nowrap; }
 @media (max-width: 480px) {
-  .rec-sets td.note { width: 70%; }
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
 """
