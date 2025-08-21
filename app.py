@@ -242,8 +242,7 @@ def coach_chat_stream(history: list[list[str]], user_msg: str):
 
 # ------------ 建立介面 ------------
 with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🏋️‍♂️ Workout Logger + 🤖 Coach
-快速記錄重量訓練與查詢歷史，並附帶教練機器人提供訓練建議。")
+    gr.Markdown("# 🏋️‍♂️ Workout Logger + 🤖 Coach\n快速記錄重量訓練與查詢歷史，並附帶教練機器人提供訓練建議。")
 
     with gr.Tabs():
         # ---- Log 分頁 ----
@@ -320,11 +319,12 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft()) as demo:
             user_in.submit(coach_chat_stream, inputs=[chatbot, user_in], outputs=[chatbot, user_in])
             clear_btn.click(lambda: ([], ""), None, [chatbot, user_in], queue=False)
 
-    gr.Markdown("---
+    gr.Markdown("""---
 **Tips**
 - Item 名稱可直接輸入新文字，下次會出現在下拉選單。
 - 空白的 Item 不會儲存。
-- Total Volume = ∑(kg × reps)。")
+- Total Volume = ∑(kg × reps)。
+""")
 
 if __name__ == "__main__":
     ensure_records_csv()
