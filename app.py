@@ -3,20 +3,29 @@ Gradio Workout Logger + 你的教練（Groq）— 單檔可執行 app.py
 更新：
 - 每次只記錄 1 個 Item（多次 Save 以追加）
 - kg / reps 輸入預設為空（不顯示 0）
-- Item 下拉會列出過去紀錄中的動作名稱（亦可自訂新名稱）
-- Coach 分頁名稱改為「你的教練」，不顯示多餘說明文字
-- Records/最新紀錄：調整 Note 欄位為最寬（以 CSS 力度加強），並確保 Note 放在最後一欄
+- Item 下拉會列出「雲端紀錄（Google Sheet）」與本地已知動作
+- Save 時：
+  * 直接以 Google Sheet 作為資料來源與顯示來源（<cloud record>）
+  * 若內容與最近一次（同 item、同日期）完全相同 ⇒ 不儲存並停用 Save 按鈕
+  * 若 10 分鐘內同 item 同日期有舊紀錄 ⇒ 以新內容覆蓋（刪舊寫新）
+  * 每次存檔後，整表同步至 Google Sheet；本地 CSV 僅作為備援鏡像
+- Records / 最新紀錄：直接讀取 Google Sheet；Note 欄位最寬
 
 執行方式：
     pip install gradio pandas python-dateutil
     python app.py
+授權方式（Google Sheet）：
+    建議使用 Service Account，並將該帳戶的 email 分享為試算表的「可編輯」
+    1) 設定環境變數 `gspread_service_json` 為 service account JSON 內容（整段字串）
+       或設定 `GOOGLE_APPLICATION_CREDENTIALS` 指向本機 JSON 檔案
 """
 from __future__ import annotations
 import os
 import json
 from pathlib import Path
-from typing import List
-from datetime import datetime, date
+from typing import List, Optional
+from datetime import datetime, date, timedelta
+import hashlib
 
 # 依需求：groq 安裝/匯入
 try:
@@ -24,6 +33,15 @@ try:
 except ImportError:
     os.system('pip install groq')
     from groq import Groq
+
+# Google Sheets 相依
+try:
+    import gspread
+    from gspread_dataframe import set_with_dataframe, get_as_dataframe
+except ImportError:
+    os.system('pip install gspread gspread_dataframe')
+    import gspread
+    from gspread_dataframe import set_with_dataframe, get_as_dataframe
 
 import gradio as gr
 import pandas as pd
@@ -34,6 +52,9 @@ RECORDS_CSV = Path("workout_records.csv")
 ITEMS_JSON = Path("known_items.json")
 NUM_ITEMS = 1            # 每次只記錄 1 個 Item
 NUM_SETS = 5
+WINDOW_MINUTES = 10      # 10 分鐘內可覆寫
+SHEET_ID = "1qWH-FQKqAMLXdN2uV4fcLIk5URRjBwY7nELznZ352og"
+SHEET_TITLE = "records"
 
 # ------------ Groq（教練機器人）設定 ------------
 GROQ_API_KEY = os.getenv("groq_key")  # 用 secret: groq_key
@@ -49,7 +70,119 @@ SYSTEM_PROMPT = (
 )
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# ------------ Data I/O 工具 ------------
+# ------------ Google Sheets 工具 ------------
+
+def _gs_client() -> Optional[gspread.Client]:
+    try:
+        sa_json = os.getenv("gspread_service_json") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+        if sa_json:
+            creds_dict = json.loads(sa_json)
+            return gspread.service_account_from_dict(creds_dict)
+        # 否則走 GOOGLE_APPLICATION_CREDENTIALS
+        return gspread.service_account()
+    except Exception:
+        return None
+
+
+def _open_or_create_ws(client: gspread.Client):
+    sh = client.open_by_key(SHEET_ID)
+    try:
+        ws = sh.worksheet(SHEET_TITLE)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=SHEET_TITLE, rows=1000, cols=30)
+    # 確保表頭
+    ensure_records_header(ws)
+    return ws
+
+
+def ensure_records_header(ws):
+    cols = ["date", "item"]
+    for s in range(1, NUM_SETS+1):
+        cols += [f"set{s}_kg", f"set{s}_reps"]
+    cols += ["note", "total_volume_kg", "created_at"]
+    try:
+        first_row = ws.row_values(1)
+    except Exception:
+        first_row = []
+    if first_row != cols:
+        ws.clear()
+        ws.update([cols])
+
+
+def read_cloud_df() -> Optional[pd.DataFrame]:
+    client = _gs_client()
+    if not client:
+        return None
+    try:
+        ws = _open_or_create_ws(client)
+        df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        # 移除全空列；確保欄位名
+        df = df.dropna(how='all')
+        if df.empty:
+            # 建立空 DataFrame 但有正確欄位
+            cols = ["date", "item"]
+            for s in range(1, NUM_SETS+1):
+                cols += [f"set{s}_kg", f"set{s}_reps"]
+            cols += ["note", "total_volume_kg", "created_at"]
+            df = pd.DataFrame(columns=cols)
+        # 轉字串型態以避免 NaN 問題（除數值欄）
+        return df
+    except Exception:
+        return None
+
+
+def write_cloud_df(df: pd.DataFrame) -> bool:
+    client = _gs_client()
+    if not client:
+        return False
+    try:
+        ws = _open_or_create_ws(client)
+        ws.clear()
+        set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        return True
+    except Exception:
+        return False
+
+# ------------ 本地 CSV 備援 ------------
+
+def ensure_records_csv():
+    if not RECORDS_CSV.exists():
+        cols = ["date", "item"]
+        for s in range(1, NUM_SETS+1):
+            cols += [f"set{s}_kg", f"set{s}_reps"]
+        cols += ["note", "total_volume_kg", "created_at"]
+        pd.DataFrame(columns=cols).to_csv(RECORDS_CSV, index=False, encoding="utf-8")
+
+
+def load_local_df() -> pd.DataFrame:
+    ensure_records_csv()
+    try:
+        return pd.read_csv(RECORDS_CSV)
+    except Exception:
+        return pd.DataFrame()
+
+
+def write_local_df(df: pd.DataFrame):
+    df.to_csv(RECORDS_CSV, index=False, encoding="utf-8")
+
+
+# ------------ 輔助：來源優先雲端 ------------
+
+def load_records_df() -> pd.DataFrame:
+    df = read_cloud_df()
+    if df is not None:
+        return df
+    return load_local_df()
+
+
+def save_records_df(df: pd.DataFrame) -> bool:
+    ok_cloud = write_cloud_df(df)
+    write_local_df(df)
+    return ok_cloud
+
+
+# ------------ 其他工具 ------------
+
 def load_known_items() -> List[str]:
     if ITEMS_JSON.exists():
         try:
@@ -68,46 +201,29 @@ def save_known_items(items: List[str]):
     ITEMS_JSON.write_text(json.dumps(uniq, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def ensure_records_csv():
-    if not RECORDS_CSV.exists():
-        cols = ["date", "item"]
-        for s in range(1, NUM_SETS+1):
-            cols += [f"set{s}_kg", f"set{s}_reps"]
-        cols += ["note", "total_volume_kg", "created_at"]
-        pd.DataFrame(columns=cols).to_csv(RECORDS_CSV, index=False, encoding="utf-8")
-
-
-def append_records(rows: List[dict]):
-    ensure_records_csv()
-    if not rows:
-        return
-    df_old = pd.read_csv(RECORDS_CSV)
-    df_new = pd.DataFrame(rows)
-    df_all = pd.concat([df_old, df_new], ignore_index=True)
-    df_all.to_csv(RECORDS_CSV, index=False, encoding="utf-8")
-
-
 def get_all_item_choices() -> List[str]:
-    """合併 JSON 與 CSV 中出現過的 item；依歷史出現頻率排序。"""
-    seen = []
-    # 從 CSV 抓 item 次數
-    if RECORDS_CSV.exists():
-        try:
-            df = pd.read_csv(RECORDS_CSV)
-            counts = (
-                df["item"].dropna().astype(str).str.strip().value_counts()
-                if "item" in df.columns else pd.Series(dtype=int)
-            )
-            seen += [x for x in counts.index.tolist() if x]
-        except Exception:
-            pass
-    # 加入 JSON 中的 known_items（去重）
+    seen: List[str] = []
+    # 從雲端讀
+    df = read_cloud_df()
+    if df is not None and not df.empty and "item" in df.columns:
+        counts = df["item"].dropna().astype(str).str.strip().value_counts()
+        seen += [x for x in counts.index.tolist() if x]
+    else:
+        # 從本地備援
+        if RECORDS_CSV.exists():
+            try:
+                df_local = pd.read_csv(RECORDS_CSV)
+                if "item" in df_local.columns:
+                    counts = df_local["item"].dropna().astype(str).str.strip().value_counts()
+                    seen += [x for x in counts.index.tolist() if x]
+            except Exception:
+                pass
+    # 加上 JSON known
     for it in load_known_items():
         if it and it not in seen:
             seen.append(it)
     return seen
 
-# ------------ 儲存紀錄邏輯 ------------
 
 def compute_total_volume(kg_list: List[float|None], reps_list: List[int|None]) -> float:
     total = 0.0
@@ -121,21 +237,31 @@ def compute_total_volume(kg_list: List[float|None], reps_list: List[int|None]) -
     return round(total, 2)
 
 
+def hash_entry(row: dict) -> str:
+    key = json.dumps({k: row.get(k) for k in [
+        "date", "item",
+        *[f"set{i}_kg" for i in range(1, NUM_SETS+1)],
+        *[f"set{i}_reps" for i in range(1, NUM_SETS+1)],
+        "note"
+    ]}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+# ------------ 儲存動作（含 10 分鐘覆寫 & 重複檢查） ------------
+
 def save_button_clicked(date_str: str, *flat_inputs):
-    """flat_inputs 內容：
-    [item_name, set1_kg, set1_reps, ..., set5_kg, set5_reps, note]
-    """
+    # 解析日期
     try:
         dt = pd.to_datetime(date_str).date()
     except Exception:
-        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), pd.DataFrame()
+        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), pd.DataFrame(), gr.update()
 
+    # 展平：單一 item
     block_size = 1 + (NUM_SETS * 2) + 1
-    # 僅一個 item
     chunk = list(flat_inputs[:block_size])
     item_name = (chunk[0] or "").strip()
     if not item_name:
-        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), pd.DataFrame()
+        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), pd.DataFrame(), gr.update()
 
     kg_vals, reps_vals = [], []
     sets_kv = {}
@@ -152,16 +278,71 @@ def save_button_clicked(date_str: str, *flat_inputs):
     note = chunk[pos] if pos < len(chunk) else ""
 
     total_volume = compute_total_volume(kg_vals, reps_vals)
-    row = {
+    now = datetime.now()
+    new_row = {
         "date": dt.isoformat(),
         "item": item_name,
         **sets_kv,
         "note": note,
         "total_volume_kg": total_volume,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": now.isoformat(timespec="seconds"),
     }
+    new_hash = hash_entry(new_row)
 
-    append_records([row])
+    # 載入來源（優先雲端）
+    df = load_records_df()
+
+    # 篩同日同 item 最近一筆
+    idx_recent = None
+    recent_row = None
+    if not df.empty:
+        try:
+            df_tmp = df.copy()
+            if "created_at" in df_tmp.columns:
+                df_tmp["created_at_dt"] = pd.to_datetime(df_tmp["created_at"], errors="coerce")
+            else:
+                df_tmp["created_at_dt"] = pd.NaT
+            mask = (df_tmp["date"].astype(str) == new_row["date"]) & (df_tmp["item"].astype(str) == new_row["item"])
+            df_same = df_tmp[mask].sort_values("created_at_dt", ascending=False)
+            if not df_same.empty:
+                idx_recent = df_same.index[0]
+                recent_row = df.loc[idx_recent].to_dict()
+        except Exception:
+            pass
+
+    # 若內容未變更：不儲存，並停用 Save
+    if recent_row is not None:
+        recent_hash = hash_entry(recent_row)
+        if recent_hash == new_hash:
+            merged_choices = get_all_item_choices()
+            latest = load_records_df()
+            if not latest.empty and "note" in latest.columns:
+                cols = [c for c in latest.columns if c != "note"] + ["note"]
+                latest = latest[cols]
+            return ("內容未變更：未儲存。", gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=False))
+
+    # 若 10 分鐘內有舊紀錄：覆寫（刪舊寫新）
+    replaced = False
+    if recent_row is not None:
+        try:
+            t_recent = pd.to_datetime(recent_row.get("created_at"), errors="coerce")
+            if pd.notna(t_recent) and (now - t_recent.to_pydatetime()) <= timedelta(minutes=WINDOW_MINUTES):
+                # 刪除舊行
+                df = df.drop(index=idx_recent)
+                replaced = True
+        except Exception:
+            pass
+
+    # 追加新行
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+    # 讓 note 放最後一欄
+    if "note" in df.columns:
+        cols = [c for c in df.columns if c != "note"] + ["note"]
+        df = df[cols]
+
+    # 同步寫回雲端與本地
+    save_records_df(df)
 
     # 更新已知 item 清單
     known = load_known_items()
@@ -169,25 +350,20 @@ def save_button_clicked(date_str: str, *flat_inputs):
         known.append(item_name)
         save_known_items(known)
 
-    # 重新抓選單（含 CSV 歷史）
     merged_choices = get_all_item_choices()
+    latest = load_records_df()
+    if not latest.empty and "note" in latest.columns:
+        cols = [c for c in latest.columns if c != "note"] + ["note"]
+        latest = latest[cols]
 
-    # 最新 20 筆，並把 note 放最後一欄
-    df = pd.read_csv(RECORDS_CSV)
-    if not df.empty and "note" in df.columns:
-        cols = [c for c in df.columns if c != "note"] + ["note"]
-        df = df[cols]
-
-    return (f"已儲存 1 筆（日期：{dt.isoformat()}）。", gr.update(choices=merged_choices), df.tail(20))
+    msg = ("已覆寫最近 10 分鐘內的舊紀錄。" if replaced else "已儲存 1 筆。") + f"（日期：{dt.isoformat()}）"
+    return (msg, gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=True))
 
 
-# ------------ Records 搜尋 ------------
+# ------------ Records 搜尋（直接讀雲端，失敗則備援） ------------
 
 def search_records(date_from: str, date_to: str, item_filter: str):
-    ensure_records_csv()
-    if not RECORDS_CSV.exists():
-        return pd.DataFrame()
-    df = pd.read_csv(RECORDS_CSV)
+    df = load_records_df()
 
     if date_from:
         try:
@@ -204,8 +380,14 @@ def search_records(date_from: str, date_to: str, item_filter: str):
         df = df[df["item"].astype(str).str.contains(item_filter, case=False, na=False)]
 
     if not df.empty:
-        df = df.sort_values(["date", "created_at"], ascending=[False, False])
-        # 讓 note 放在最後一欄
+        # created_at 由新到舊
+        try:
+            df["created_at_dt"] = pd.to_datetime(df["created_at"], errors="coerce")
+            df = df.sort_values(["date", "created_at_dt"], ascending=[False, False])
+            df = df.drop(columns=["created_at_dt"], errors="ignore")
+        except Exception:
+            pass
+        # 讓 note 放最後一欄
         if "note" in df.columns:
             cols = [c for c in df.columns if c != "note"] + ["note"]
             df = df[cols]
@@ -276,7 +458,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
             today_str = date.today().isoformat()
             date_in = gr.Textbox(value=today_str, label="Date (YYYY-MM-DD)")
 
-            # 選單：合併歷史（CSV）與已知（JSON）
+            # 選單：合併雲端與已知
             item_choices = get_all_item_choices()
 
             gr.Markdown("### Item 1")
@@ -292,14 +474,14 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 
             save_btn = gr.Button("💾 Save", variant="primary")
             status_md = gr.Markdown("")
-            latest_df = gr.Dataframe(headers=None, value=pd.DataFrame(), wrap=True, interactive=False,
-                                     label="最近 20 筆紀錄", elem_id="latest_df")
+            latest_df = gr.Dataframe(headers=None, value=load_records_df().tail(20) if not load_records_df().empty else pd.DataFrame(),
+                                     wrap=True, interactive=False, label="最近 20 筆紀錄", elem_id="latest_df")
 
             flat_inputs = [item_dd, *set_inputs, note_in]
             save_btn.click(
                 fn=save_button_clicked,
                 inputs=[date_in, *flat_inputs],
-                outputs=[status_md, item_dd, latest_df],
+                outputs=[status_md, item_dd, latest_df, save_btn],
             )
 
         # ---- Records 分頁 ----
@@ -309,7 +491,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
                 q_to = gr.Textbox(label="To (YYYY-MM-DD)")
                 q_item = gr.Textbox(label="Item 包含（關鍵字）")
             query_btn = gr.Button("🔎 Search")
-            out_df = gr.Dataframe(headers=None, value=pd.DataFrame(), wrap=True, interactive=False, label="搜尋結果", elem_id="records_df")
+            out_df = gr.Dataframe(headers=None, value=load_records_df(), wrap=True, interactive=False, label="搜尋結果", elem_id="records_df")
             query_btn.click(search_records, inputs=[q_from, q_to, q_item], outputs=out_df)
 
         # ---- 你的教練（無說明文字） ----
@@ -331,5 +513,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 """)
 
 if __name__ == "__main__":
-    ensure_records_csv()
+    # 建立本地備援檔
+    if not RECORDS_CSV.exists():
+        ensure_records_csv()
     demo.launch()
