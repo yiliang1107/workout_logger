@@ -110,8 +110,25 @@ def ensure_records_header(ws):
 
 
 def read_cloud_df() -> Optional[pd.DataFrame]:
+    global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
+        CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
+        return None
+    try:
+        ws = _open_or_create_ws(client)
+        df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        df = df.dropna(how='all')
+        if df.empty:
+            cols = ["date", "item"]
+            for s in range(1, NUM_SETS+1):
+                cols += [f"set{s}_kg", f"set{s}_reps"]
+            cols += ["note", "total_volume_kg", "created_at"]
+            df = pd.DataFrame(columns=cols)
+        CLOUD_LAST_ERROR = ""
+        return df
+    except Exception as e:
+        CLOUD_LAST_ERROR = f"讀取雲端失敗：{e}"
         return None
     try:
         ws = _open_or_create_ws(client)
@@ -132,8 +149,19 @@ def read_cloud_df() -> Optional[pd.DataFrame]:
 
 
 def write_cloud_df(df: pd.DataFrame) -> bool:
+    global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
+        CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
+        return False
+    try:
+        ws = _open_or_create_ws(client)
+        ws.clear()
+        set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        CLOUD_LAST_ERROR = ""
+        return True
+    except Exception as e:
+        CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
         return False
     try:
         ws = _open_or_create_ws(client)
@@ -356,7 +384,27 @@ def save_button_clicked(date_str: str, *flat_inputs):
         cols = [c for c in latest.columns if c != "note"] + ["note"]
         latest = latest[cols]
 
+    ok_cloud = save_records_df(df)
+
     msg = ("已覆寫最近 10 分鐘內的舊紀錄。" if replaced else "已儲存 1 筆。") + f"（日期：{dt.isoformat()}）"
+    if ok_cloud:
+        msg += "｜雲端同步✅"
+    else:
+        extra = f"（{CLOUD_LAST_ERROR}）" if CLOUD_LAST_ERROR else ""
+        msg += f"｜雲端同步❌，僅寫入本機備援 {extra}"
+
+    # 更新已知 item 清單
+    known = load_known_items()
+    if item_name not in known:
+        known.append(item_name)
+        save_known_items(known)
+
+    merged_choices = get_all_item_choices()
+    latest = load_records_df()
+    if not latest.empty and "note" in latest.columns:
+        cols = [c for c in latest.columns if c != "note"] + ["note"]
+        latest = latest[cols]
+
     return (msg, gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=True))
 
 
@@ -451,6 +499,10 @@ CSS = """
 with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
     gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
 快速記錄重量訓練與查詢歷史。""")
+    # 雲端狀態提示
+    _df_probe = read_cloud_df()
+    cloud_status = "已連線至雲端試算表 ✅" if _df_probe is not None else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
+    cloud_md = gr.Markdown(f"**Cloud**：{cloud_status}")
 
     with gr.Tabs():
         # ---- Log 分頁（單一 Item） ----
