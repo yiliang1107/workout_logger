@@ -267,8 +267,8 @@ CSS = """
 
 # ------------ 建立介面 ------------
 with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
-    gr.Markdown("# 🏋️‍♂️ Workout Logger + 🤖 你的教練
-快速記錄重量訓練與查詢歷史。")
+    gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
+快速記錄重量訓練與查詢歷史。""")
 
     with gr.Tabs():
         # ---- Log 分頁（單一 Item） ----
