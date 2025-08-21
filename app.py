@@ -178,11 +178,47 @@ def read_cloud_df() -> Optional[pd.DataFrame]:
 
 
 def write_cloud_df(df: pd.DataFrame) -> Tuple[bool, int]:
-    """不用 gspread_dataframe，直接用 ws.update('A1', values)。"""
+    """不用 gspread_dataframe，直接 ws.update(range_name='A1', values=...).
+    另外強制欄位順序，並把 NaN 轉為空字串，避免整列被視為空白。"""
     global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
         CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
+        return False, 0
+    try:
+        ws = _open_or_create_ws(client)
+        # 欄位順序
+        cols = ["date", "item"] + sum(([f"set{s}_kg", f"set{s}_reps"] for s in range(1, NUM_SETS+1)), []) + ["note", "total_volume_kg", "created_at"]
+        out_df = df.copy()
+        # 若缺欄位補空、並重排
+        for c in cols:
+            if c not in out_df.columns:
+                out_df[c] = ""
+        out_df = out_df[cols]
+        out_df = out_df.fillna("")
+        # 轉成純 Python 基本型別
+        raw_values = out_df.values.tolist()
+        values: list[list] = []
+        for row in raw_values:
+            new_row = []
+            for x in row:
+                if isinstance(x, (int, float, str)):
+                    new_row.append(x)
+                else:
+                    new_row.append(str(x) if x is not None else "")
+            values.append(new_row)
+        # 清空+寫入
+        ws.clear()
+        ws.update(range_name="A1", values=[cols] + values)
+        # 調整大小
+        try:
+            ws.resize(rows=max(2, len(values) + 1), cols=len(cols))
+        except Exception:
+            pass
+        CLOUD_LAST_ERROR = ""
+        return True, len(values)
+    except Exception as e:
+        CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
         return False, 0
     try:
         ws = _open_or_create_ws(client)
