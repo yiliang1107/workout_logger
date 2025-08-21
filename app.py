@@ -127,10 +127,38 @@ def ensure_records_header(ws):
 
 
 def read_cloud_df() -> Optional[pd.DataFrame]:
+    """改用 get_all_values 讀取，避免 gspread_dataframe 造成的空白列問題。"""
     global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
         CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
+        return None
+    try:
+        ws = _open_or_create_ws(client)
+        rows = ws.get_all_values()  # 2D list
+        if not rows:
+            return None
+        header = rows[0] if rows else []
+        data = rows[1:] if len(rows) > 1 else []
+        if not header:
+            return None
+        if not data:
+            # 回傳空 DF 但保留欄位
+            df = pd.DataFrame(columns=header)
+        else:
+            df = pd.DataFrame(data, columns=header)
+        # 對數值欄嘗試轉型，空白保持空字串
+        for s in range(1, NUM_SETS+1):
+            for sub in ("kg", "reps"):
+                col = f"set{s}_{sub}"
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+        if "total_volume_kg" in df.columns:
+            df["total_volume_kg"] = pd.to_numeric(df["total_volume_kg"], errors="coerce")
+        CLOUD_LAST_ERROR = ""
+        return df
+    except Exception as e:
+        CLOUD_LAST_ERROR = f"讀取雲端失敗：{e}"
         return None
     try:
         ws = _open_or_create_ws(client)
@@ -150,11 +178,30 @@ def read_cloud_df() -> Optional[pd.DataFrame]:
 
 
 def write_cloud_df(df: pd.DataFrame) -> Tuple[bool, int]:
-    """回傳 (成功與否, 寫入後總列數)"""
+    """不用 gspread_dataframe，直接用 ws.update('A1', values)。"""
     global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
         CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
+        return False, 0
+    try:
+        ws = _open_or_create_ws(client)
+        # 準備資料：將 NaN 轉成空字串，確保會寫出列
+        out_df = df.copy()
+        out_df = out_df.fillna("")
+        header = list(out_df.columns)
+        values = out_df.values.tolist()
+        ws.clear()
+        ws.update("A1", [header] + values)
+        # 最後調整表格大小
+        try:
+            ws.resize(rows=max(2, len(values) + 1), cols=len(header))
+        except Exception:
+            pass
+        CLOUD_LAST_ERROR = ""
+        return True, len(values)
+    except Exception as e:
+        CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
         return False, 0
     try:
         ws = _open_or_create_ws(client)
@@ -526,7 +573,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 
         # ---- 你的教練 ----
         with gr.TabItem("你的教練"):
-            chatbot = gr.Chatbot(height=420)
+            chatbot = gr.Chatbot(height=420, type="messages")
             user_in = gr.Textbox(placeholder="輸入你的問題，按 Enter 或點送出…", label="訊息")
             with gr.Row():
                 send_btn = gr.Button("送出", variant="primary")
