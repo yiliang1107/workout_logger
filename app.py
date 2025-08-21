@@ -1,26 +1,17 @@
 """
-Gradio Workout Logger + 你的教練（Groq）— 單檔可執行 app.py（雲端修正版）
-重點更新：
-- 直接使用 Google Sheet 做資料來源與顯示來源（<cloud record>）。
-- 自動偵測分頁名稱：優先 `SHEET_TITLE`（環境變數）→ `records` → `record` → 第一個分頁。
-- UI 顯示 Cloud 連線狀態、目標分頁名稱與目前行數；Save 後訊息會顯示雲端是否成功與總列數。
-- 10 分鐘內同日期+同 item 覆寫、內容相同不再重存（並暫時停用 Save）。
-
-執行：
-    pip install -r requirements.txt  # 或直接 pip install gradio pandas python-dateutil groq gspread gspread_dataframe google-auth google-auth-oauthlib
-    python app.py
-環境變數：
-    groq_key=...                 # Groq API Key
-    gspread_service_json=...     # 貼整段 Service Account JSON（或使用 GOOGLE_APPLICATION_CREDENTIALS 指向檔案）
-    SHEET_TITLE=records          # 可選，指定要用的 worksheet 名稱
+Gradio Workout Logger + 你的教練（Groq）— app.py（行動版 Note 顯示最佳化 + 雲端）
+- 直接連 Google Sheet（SHEET_ID 固定，Worksheet 自動偵測 records/record/第一個分頁）。
+- 10 分鐘內同日期+同 item 覆寫；內容相同不重存並暫時停用 Save。
+- 所有列表（最近 20 筆、搜尋結果）改為 **兩列一筆** 的 HTML 表格：第二列專門放 Note，滿版顯示，行動裝置不會被吃掉。
+- Google Sheet 的儲存格式維持原本欄位（note 為單一欄），只是在 UI 以兩列呈現。
 """
 from __future__ import annotations
-import os, json, hashlib
+import os, json, hashlib, html
 from pathlib import Path
 from typing import List, Optional, Tuple
 from datetime import datetime, date, timedelta
 
-# ---- 依需求：groq 安裝/匯入 ----
+# ---- Groq 安裝/匯入 ----
 try:
     from groq import Groq
 except ImportError:
@@ -30,11 +21,9 @@ except ImportError:
 # ---- Google Sheets 相依 ----
 try:
     import gspread
-    from gspread_dataframe import set_with_dataframe, get_as_dataframe
 except ImportError:
-    os.system('pip install gspread gspread_dataframe google-auth google-auth-oauthlib')
+    os.system('pip install gspread google-auth google-auth-oauthlib')
     import gspread
-    from gspread_dataframe import set_with_dataframe, get_as_dataframe
 
 import gradio as gr
 import pandas as pd
@@ -62,7 +51,7 @@ SYSTEM_PROMPT = (
 )
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# 追蹤雲端狀態
+# 雲端狀態
 CLOUD_LAST_ERROR = ""
 CLOUD_WS_TITLE = None
 
@@ -74,33 +63,23 @@ def _gs_client() -> Optional[gspread.Client]:
         if sa_json:
             creds_dict = json.loads(sa_json)
             return gspread.service_account_from_dict(creds_dict)
-        return gspread.service_account()  # 走 GOOGLE_APPLICATION_CREDENTIALS
+        return gspread.service_account()
     except Exception:
         return None
 
 
 def _get_target_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
-    """
-    目標 worksheet 決策：
-    1) SHEET_TITLE_ENV
-    2) 'records'
-    3) 'record'
-    4) 第一個現有分頁
-    若都沒有，建立 SHEET_TITLE_ENV。
-    """
+    """優先 SHEET_TITLE_ENV → 'records' → 'record' → 第一個分頁；若沒有則建立 SHEET_TITLE_ENV。"""
     global CLOUD_WS_TITLE
-    # 先嘗試直接取
     preferred = [SHEET_TITLE_ENV, "records", "record"]
     titles = [ws.title for ws in sh.worksheets()]
     for name in preferred:
         if name in titles:
             CLOUD_WS_TITLE = name
             return sh.worksheet(name)
-    # 沒找到就用第一個
     if titles:
         CLOUD_WS_TITLE = titles[0]
         return sh.worksheet(titles[0])
-    # 若竟然沒有分頁，建立一個
     CLOUD_WS_TITLE = SHEET_TITLE_ENV
     return sh.add_worksheet(title=SHEET_TITLE_ENV, rows=1000, cols=30)
 
@@ -123,11 +102,11 @@ def ensure_records_header(ws):
         first_row = []
     if first_row != cols:
         ws.clear()
-        ws.update([cols])
+        ws.update(range_name="A1", values=[cols])
 
 
 def read_cloud_df() -> Optional[pd.DataFrame]:
-    """改用 get_all_values 讀取，避免 gspread_dataframe 造成的空白列問題。"""
+    """用 get_all_values 讀取；若只有表頭回傳空 DF 但保留欄位。"""
     global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
@@ -135,19 +114,18 @@ def read_cloud_df() -> Optional[pd.DataFrame]:
         return None
     try:
         ws = _open_or_create_ws(client)
-        rows = ws.get_all_values()  # 2D list
+        rows = ws.get_all_values()
         if not rows:
             return None
-        header = rows[0] if rows else []
+        header = rows[0]
         data = rows[1:] if len(rows) > 1 else []
         if not header:
             return None
         if not data:
-            # 回傳空 DF 但保留欄位
             df = pd.DataFrame(columns=header)
         else:
             df = pd.DataFrame(data, columns=header)
-        # 對數值欄嘗試轉型，空白保持空字串
+        # 嘗試轉數值欄型態
         for s in range(1, NUM_SETS+1):
             for sub in ("kg", "reps"):
                 col = f"set{s}_{sub}"
@@ -160,26 +138,10 @@ def read_cloud_df() -> Optional[pd.DataFrame]:
     except Exception as e:
         CLOUD_LAST_ERROR = f"讀取雲端失敗：{e}"
         return None
-    try:
-        ws = _open_or_create_ws(client)
-        df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
-        df = df.dropna(how='all')
-        if df.empty:
-            cols = ["date", "item"]
-            for s in range(1, NUM_SETS+1):
-                cols += [f"set{s}_kg", f"set{s}_reps"]
-            cols += ["note", "total_volume_kg", "created_at"]
-            df = pd.DataFrame(columns=cols)
-        CLOUD_LAST_ERROR = ""
-        return df
-    except Exception as e:
-        CLOUD_LAST_ERROR = f"讀取雲端失敗：{e}"
-        return None
 
 
 def write_cloud_df(df: pd.DataFrame) -> Tuple[bool, int]:
-    """不用 gspread_dataframe，直接 ws.update(range_name='A1', values=...).
-    另外強制欄位順序，並把 NaN 轉為空字串，避免整列被視為空白。"""
+    """直接 ws.update(range_name='A1', values=...)；回傳 (成功與否, 寫入列數)。"""
     global CLOUD_LAST_ERROR
     client = _gs_client()
     if not client:
@@ -187,66 +149,23 @@ def write_cloud_df(df: pd.DataFrame) -> Tuple[bool, int]:
         return False, 0
     try:
         ws = _open_or_create_ws(client)
-        # 欄位順序
         cols = ["date", "item"] + sum(([f"set{s}_kg", f"set{s}_reps"] for s in range(1, NUM_SETS+1)), []) + ["note", "total_volume_kg", "created_at"]
         out_df = df.copy()
-        # 若缺欄位補空、並重排
         for c in cols:
             if c not in out_df.columns:
                 out_df[c] = ""
-        out_df = out_df[cols]
-        out_df = out_df.fillna("")
-        # 轉成純 Python 基本型別
-        raw_values = out_df.values.tolist()
-        values: list[list] = []
-        for row in raw_values:
-            new_row = []
-            for x in row:
-                if isinstance(x, (int, float, str)):
-                    new_row.append(x)
-                else:
-                    new_row.append(str(x) if x is not None else "")
-            values.append(new_row)
-        # 清空+寫入
+        out_df = out_df[cols].fillna("")
+        values = []
+        for row in out_df.values.tolist():
+            values.append([x if isinstance(x, (int, float, str)) else ("" if x is None else str(x)) for x in row])
         ws.clear()
         ws.update(range_name="A1", values=[cols] + values)
-        # 調整大小
         try:
             ws.resize(rows=max(2, len(values) + 1), cols=len(cols))
         except Exception:
             pass
         CLOUD_LAST_ERROR = ""
         return True, len(values)
-    except Exception as e:
-        CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
-        return False, 0
-    try:
-        ws = _open_or_create_ws(client)
-        # 準備資料：將 NaN 轉成空字串，確保會寫出列
-        out_df = df.copy()
-        out_df = out_df.fillna("")
-        header = list(out_df.columns)
-        values = out_df.values.tolist()
-        ws.clear()
-        ws.update("A1", [header] + values)
-        # 最後調整表格大小
-        try:
-            ws.resize(rows=max(2, len(values) + 1), cols=len(header))
-        except Exception:
-            pass
-        CLOUD_LAST_ERROR = ""
-        return True, len(values)
-    except Exception as e:
-        CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
-        return False, 0
-    try:
-        ws = _open_or_create_ws(client)
-        ws.clear()
-        set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
-        CLOUD_LAST_ERROR = ""
-        # 重新抓一次行數
-        total_rows = len(df.index)
-        return True, total_rows
     except Exception as e:
         CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
         return False, 0
@@ -274,19 +193,7 @@ def write_local_df(df: pd.DataFrame):
     df.to_csv(RECORDS_CSV, index=False, encoding="utf-8")
 
 
-# ------------ 優先雲端 ------------
-
-def cloud_status_line() -> str:
-    df = read_cloud_df()
-    target = CLOUD_WS_TITLE or SHEET_TITLE_ENV
-    cloud_status = "已連線至雲端試算表 ✅" if df is not None else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
-    try:
-        count = 0 if df is None else len(df)
-    except Exception:
-        count = 0
-    return f"**Cloud**：{cloud_status}，分頁：{target}，目前列數：{count}"
-
-# ------------ 優先雲端 ------------
+# ------------ 優先雲端 & 狀態行 ------------
 
 def load_records_df() -> pd.DataFrame:
     df = read_cloud_df()
@@ -300,6 +207,16 @@ def save_records_df(df: pd.DataFrame) -> Tuple[bool, int]:
     write_local_df(df)
     return ok_cloud, total_rows
 
+
+def cloud_status_line() -> str:
+    df = read_cloud_df()
+    target = CLOUD_WS_TITLE or SHEET_TITLE_ENV
+    cloud_status = "已連線至雲端試算表 ✅" if df is not None else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
+    try:
+        count = 0 if df is None else len(df)
+    except Exception:
+        count = 0
+    return f"**Cloud**：{cloud_status}，分頁：{target}，目前列數：{count}"
 
 # ------------ 其他工具 ------------
 
@@ -363,8 +280,43 @@ def hash_entry(row: dict) -> str:
     ]}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
+# ------------ HTML（兩列一筆，第二列放 Note） ------------
 
-# ------------ 儲存（含覆寫與重複判斷） ------------
+def _pretty_name(col: str) -> str:
+    mapping = {"total_volume_kg": "total", "created_at": "created_at"}
+    return mapping.get(col, col)
+
+
+def df_to_html_stacked(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return "<div class='records-empty'>目前沒有紀錄</div>"
+    # 確保 note 在最後
+    if "note" in df.columns:
+        cols = [c for c in df.columns if c != "note"] + ["note"]
+        df = df[cols]
+    first_cols = [c for c in df.columns if c != "note"]
+    ncols = len(first_cols)
+    # 表頭
+    thead = "<tr>" + "".join(f"<th>{html.escape(_pretty_name(c))}</th>" for c in first_cols) + "</tr>"
+    # 資料列
+    body_rows = []
+    for _, row in df.iterrows():
+        tds = []
+        for c in first_cols:
+            val = row.get(c, "")
+            if pd.isna(val):
+                val = ""
+            tds.append(f"<td>{html.escape(str(val))}</td>")
+        first = "<tr>" + "".join(tds) + "</tr>"
+        note_text = row.get("note", "")
+        if pd.isna(note_text):
+            note_text = ""
+        second = f"<tr class='note-row sep'><td colspan='{ncols}'><b>Note：</b>{html.escape(str(note_text))}</td></tr>"
+        body_rows.append(first + second)
+    tbody = "".join(body_rows)
+    return f"<div class='records-scroll'><table class='records-table'><thead>{thead}</thead><tbody>{tbody}</tbody></table></div>"
+
+# ------------ 儲存（覆寫與重複判斷 + 回傳 HTML） ------------
 
 def save_button_clicked(date_str: str, item_name: str,
                         set1kg, set1reps, set2kg, set2reps, set3kg, set3reps, set4kg, set4reps, set5kg, set5reps,
@@ -373,13 +325,12 @@ def save_button_clicked(date_str: str, item_name: str,
     try:
         dt = pd.to_datetime(date_str).date()
     except Exception:
-        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), pd.DataFrame(), gr.update(), cloud_status_line()
+        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), "", gr.update(), cloud_status_line()
 
     item_name = (item_name or "").strip()
     if not item_name:
-        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), pd.DataFrame(), gr.update(), cloud_status_line()
+        return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), "", gr.update(), cloud_status_line()
 
-    # 解析數值
     def to_f(x):
         return None if x in ("", None) else float(x)
     def to_i(x):
@@ -426,10 +377,7 @@ def save_button_clicked(date_str: str, item_name: str,
     if recent_row is not None and hash_entry(recent_row) == new_hash:
         merged_choices = get_all_item_choices()
         latest = load_records_df()
-        if not latest.empty and "note" in latest.columns:
-            cols = [c for c in latest.columns if c != "note"] + ["note"]
-            latest = latest[cols]
-        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=False), cloud_status_line())
+        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), df_to_html_stacked(latest.tail(20)), gr.update(interactive=False), cloud_status_line())
 
     replaced = False
     if recent_row is not None:
@@ -443,6 +391,7 @@ def save_button_clicked(date_str: str, item_name: str,
 
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
 
+    # note 放最後一欄
     if "note" in df.columns:
         cols = [c for c in df.columns if c != "note"] + ["note"]
         df = df[cols]
@@ -451,7 +400,7 @@ def save_button_clicked(date_str: str, item_name: str,
 
     msg = ("已覆寫最近 10 分鐘內的舊紀錄。" if replaced else "已儲存 1 筆。") + f"（日期：{dt.isoformat()}）"
     if ok_cloud:
-        msg += f"｜雲端同步✅｜分頁：{CLOUD_WS_TITLE}｜總列數：{total_rows}"
+        msg += f"｜雲端同步✅｜分頁：{CLOUD_WS_TITLE or SHEET_TITLE_ENV}｜總列數：{total_rows}"
     else:
         extra = f"（{CLOUD_LAST_ERROR}）" if CLOUD_LAST_ERROR else ""
         msg += f"｜雲端同步❌ {extra}"
@@ -463,18 +412,12 @@ def save_button_clicked(date_str: str, item_name: str,
 
     merged_choices = get_all_item_choices()
     latest = load_records_df()
-    if not latest.empty and "note" in latest.columns:
-        cols = [c for c in latest.columns if c != "note"] + ["note"]
-        latest = latest[cols]
+    return (msg, gr.update(choices=merged_choices), df_to_html_stacked(latest.tail(20)), gr.update(interactive=True), cloud_status_line())
 
-    return (msg, gr.update(choices=merged_choices), latest.tail(20), gr.update(interactive=True), cloud_status_line())
-
-
-# ------------ 搜尋（直接讀雲端，失敗則備援） ------------
+# ------------ 搜尋 ------------
 
 def search_records(date_from: str, date_to: str, item_filter: str):
     df = load_records_df()
-
     if date_from:
         try:
             df = df[df["date"] >= pd.to_datetime(date_from).date().isoformat()]
@@ -485,10 +428,8 @@ def search_records(date_from: str, date_to: str, item_filter: str):
             df = df[df["date"] <= pd.to_datetime(date_to).date().isoformat()]
         except Exception:
             pass
-
     if item_filter:
         df = df[df["item"].astype(str).str.contains(item_filter, case=False, na=False)]
-
     if not df.empty:
         try:
             df["created_at_dt"] = pd.to_datetime(df["created_at"], errors="coerce")
@@ -502,6 +443,9 @@ def search_records(date_from: str, date_to: str, item_filter: str):
     return df
 
 
+def search_records_html(date_from: str, date_to: str, item_filter: str):
+    return df_to_html_stacked(search_records(date_from, date_to, item_filter))
+
 # ------------ 教練機器人（串流） ------------
 
 def coach_chat_stream(history: list[list[str]], user_msg: str):
@@ -509,13 +453,11 @@ def coach_chat_stream(history: list[list[str]], user_msg: str):
     if not msg:
         yield history, ""
         return
-
     if groq_client is None:
         bot_text = "（尚未設定環境變數 groq_key，請設定後重試。）"
         history = history + [[msg, bot_text]]
         yield history, ""
         return
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for u, b in history:
         if u:
@@ -523,7 +465,6 @@ def coach_chat_stream(history: list[list[str]], user_msg: str):
         if b:
             messages.append({"role": "assistant", "content": b})
     messages.append({"role": "user", "content": msg})
-
     try:
         completion = groq_client.chat.completions.create(
             model=GROQ_MODEL,
@@ -547,12 +488,14 @@ def coach_chat_stream(history: list[list[str]], user_msg: str):
         history = history + [[msg, f"抱歉，Groq 呼叫失敗：{e}"]]
         yield history, ""
 
-
-# ------------ CSS：擴大 Note 欄位寬度 ------------
+# ------------ CSS（行動版友善 Note 顯示）------------
 CSS = """
-#records_df table, #latest_df table { table-layout: fixed; width: 100%; }
-#records_df table th:last-child, #records_df table td:last-child,
-#latest_df table th:last-child, #latest_df table td:last-child { width: 48% !important; }
+.records-scroll { max-height: 60vh; overflow-y: auto; }
+.records-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.records-table th, .records-table td { border: 1px solid rgba(255,255,255,0.12); padding: 6px; vertical-align: top; word-break: break-word; }
+.records-table th { position: sticky; top: 0; background: rgba(255,255,255,0.04); backdrop-filter: blur(2px); }
+.records-table .note-row td { background: rgba(255,255,255,0.03); font-style: italic; }
+.records-table .sep td { border-bottom: 3px solid rgba(255,255,255,0.35); }
 """
 
 # ------------ 介面 ------------
@@ -594,15 +537,14 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
             save_btn = gr.Button("💾 Save", variant="primary")
             status_md = gr.Markdown("")
             current_df = load_records_df()
-            latest_df = gr.Dataframe(headers=None, value=current_df.tail(20) if not current_df.empty else pd.DataFrame(),
-                                     wrap=True, interactive=False, label="最近 20 筆紀錄", elem_id="latest_df")
+            latest_html = gr.HTML(value=df_to_html_stacked(current_df.tail(20)) if not current_df.empty else "", label="最近 20 筆紀錄")
 
             save_btn.click(
                 fn=save_button_clicked,
                 inputs=[date_in, item_dd,
                         set1kg, set1rp, set2kg, set2rp, set3kg, set3rp, set4kg, set4rp, set5kg, set5rp,
                         note_in],
-                outputs=[status_md, item_dd, latest_df, save_btn, cloud_md],
+                outputs=[status_md, item_dd, latest_html, save_btn, cloud_md],
             )
 
         # ---- Records ----
@@ -612,12 +554,12 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
                 q_to = gr.Textbox(label="To (YYYY-MM-DD)")
                 q_item = gr.Textbox(label="Item 包含（關鍵字）")
             query_btn = gr.Button("🔎 Search")
-            out_df = gr.Dataframe(headers=None, value=load_records_df(), wrap=True, interactive=False, label="搜尋結果", elem_id="records_df")
-            query_btn.click(search_records, inputs=[q_from, q_to, q_item], outputs=out_df)
+            out_html = gr.HTML(value=df_to_html_stacked(load_records_df()), label="搜尋結果")
+            query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
 
         # ---- 你的教練 ----
         with gr.TabItem("你的教練"):
-            chatbot = gr.Chatbot(height=420, type="messages")
+            chatbot = gr.Chatbot(height=420, type='messages')
             user_in = gr.Textbox(placeholder="輸入你的問題，按 Enter 或點送出…", label="訊息")
             with gr.Row():
                 send_btn = gr.Button("送出", variant="primary")
