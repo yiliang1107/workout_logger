@@ -1,30 +1,3 @@
-import os, json, gspread
-from google.oauth2 import service_account
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",  # 若不需要 Drive 可移除
-]
-
-def get_google_creds():
-    if os.getenv("GOOGLE_CREDENTIALS"):  # HF Secrets 方案
-        info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):  # 傳統檔案路徑方案
-        return service_account.Credentials.from_service_account_file(
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"], scopes=SCOPES
-        )
-    return None
-
-creds = get_google_creds()
-gc = gspread.authorize(creds)
-
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "<你的預設ID>")
-sh = gc.open_by_key(SPREADSHEET_ID)
-ws = sh.sheet1
-ws.append_row(["HF Space ✅", "Google 連線成功"], value_input_option="USER_ENTERED")
-
-
 """
 Gradio Workout Logger + 你的教練（Groq）— 單檔可執行 app.py
 更新：
