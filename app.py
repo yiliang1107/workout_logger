@@ -557,8 +557,7 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         sets_txt = "/".join(parts)
         note_txt = _truncate(r.get("note", ""), 40)
         total_txt = _fmt_num(r.get("total_volume_kg"))
-        lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg")
-    return "
+        lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg") return "
 ".join(lines)
 # ---------------- 教練（串流） ----------------
 
