@@ -557,8 +557,9 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         sets_txt = "/".join(parts)
         note_txt = _truncate(r.get("note", ""), 40)
         total_txt = _fmt_num(r.get("total_volume_kg"))
-        lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg") return "
-".join(lines)
+        lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg")
+    return "\n".join(lines)
+
 # ---------------- 教練（串流） ----------------
 
 def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
@@ -581,10 +582,7 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
             ctx = make_coach_context(int(ctx_days))
         except Exception:
             ctx = make_coach_context()
-        sys_content += "
-
-【學員近期紀錄摘要】
-" + ctx
+        sys_content += "\n\n【學員近期紀錄摘要】\n" + ctx
 
     api_messages = [{"role": "system", "content": sys_content}]
 
