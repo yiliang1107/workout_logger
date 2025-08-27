@@ -1,10 +1,8 @@
 """
-Gradio Workout Logger + 你的教練（Groq）— app.py（整檔穩定版，修復未結束字串）
-- 雲端：Google Sheet 優先（SHEET_ID 固定），worksheet 自動偵測（SHEET_TITLE 環境變數→records→record→第一個）。
-- 儲存：10 分鐘內同日同 item 覆寫；內容未變更則不存。
-- UI：五行 Set（#｜kg｜r），Note 另起一行，時間（台北時區、12 小時制、上午/下午/晚上）接在 Note 後面灰字。
-- Chatbot：可勾選「把最近紀錄提供給教練」，彙整最近 N 天摘要做為系統提示。
-- 修復：所有多行字串採三引號；HTML 以明確拼接，避免 `unterminated string literal`。
+Gradio Workout Logger + 你的教練（Groq）— app.py（極簡穩定版：修復未結束字串）
+說明：
+- 移除所有容易出錯的拼接；多行字串統一三引號並明確收尾。
+- 保留功能：雲端同步、10 分鐘覆寫邏輯、Item 下拉記憶、行動版五行顯示、Note 另起一行時間在後、教練可讀取最近紀錄。
 """
 from __future__ import annotations
 import os, json, hashlib, html, math
@@ -12,33 +10,41 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from datetime import datetime, date, timedelta, timezone
 
-# ---- Groq 安裝/匯入 ----
+# 依賴
+try:
+    import gradio as gr
+except Exception as e:  # pragma: no cover
+    raise e
+
+try:
+    import pandas as pd
+except Exception as e:  # pragma: no cover
+    raise e
+
+# Groq
 try:
     from groq import Groq
 except ImportError:
     os.system('pip install groq')
     from groq import Groq
 
-# ---- Google Sheets 相依 ----
+# Google Sheets
 try:
     import gspread
 except ImportError:
     os.system('pip install gspread google-auth google-auth-oauthlib')
     import gspread
 
-import gradio as gr
-import pandas as pd
-
-# ------------ 常數與檔案路徑 ------------
+# ---------------- 常數 ----------------
 APP_TITLE = "Workout Logger"
-RECORDS_CSV = Path("workout_records.csv")  # 本地備援
+RECORDS_CSV = Path("workout_records.csv")
 ITEMS_JSON = Path("known_items.json")
 NUM_SETS = 5
-WINDOW_MINUTES = 10      # 10 分鐘內可覆寫
+WINDOW_MINUTES = 10
 SHEET_ID = "1qWH-FQKqAMLXdN2uV4fcLIk5URRjBwY7nELznZ352og"
-SHEET_TITLE_ENV = os.getenv("SHEET_TITLE", "records")  # 可用環境變數覆寫
+SHEET_TITLE_ENV = os.getenv("SHEET_TITLE", "records")
 
-# ------------ Groq（教練機器人）設定 ------------
+# Groq 設定
 GROQ_API_KEY = os.getenv("groq_key")
 try:
     groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -54,33 +60,31 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # 雲端狀態
 CLOUD_LAST_ERROR = ""
-CLOUD_WS_TITLE = None
+CLOUD_WS_TITLE: Optional[str] = None
 
-# ------------ Google Sheets 工具 ------------
+# ---------------- Google Sheets 工具 ----------------
 
 def _gs_client() -> Optional[gspread.Client]:
     try:
         sa_json = os.getenv("gspread_service_json") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         if sa_json:
-            creds_dict = json.loads(sa_json)
-            return gspread.service_account_from_dict(creds_dict)
+            return gspread.service_account_from_dict(json.loads(sa_json))
         return gspread.service_account()
     except Exception:
         return None
 
 
 def _get_target_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
-    """優先 SHEET_TITLE_ENV → 'records' → 'record' → 第一個分頁；若沒有則建立 SHEET_TITLE_ENV。"""
     global CLOUD_WS_TITLE
-    preferred = [SHEET_TITLE_ENV, "records", "record"]
+    prefer = [SHEET_TITLE_ENV, "records", "record"]
     try:
         titles = [ws.title for ws in sh.worksheets()]
     except Exception:
         titles = []
-    for name in preferred:
-        if name in titles:
-            CLOUD_WS_TITLE = name
-            return sh.worksheet(name)
+    for t in prefer:
+        if t in titles:
+            CLOUD_WS_TITLE = t
+            return sh.worksheet(t)
     if titles:
         CLOUD_WS_TITLE = titles[0]
         return sh.worksheet(titles[0])
@@ -88,49 +92,43 @@ def _get_target_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
     return sh.add_worksheet(title=SHEET_TITLE_ENV, rows=1000, cols=30)
 
 
-def _open_or_create_ws(client: gspread.Client):
+def ensure_records_header(ws: gspread.Worksheet):
+    cols = ["date", "item"]
+    for s in range(1, NUM_SETS + 1):
+        cols += [f"set{s}_kg", f"set{s}_reps"]
+    cols += ["note", "total_volume_kg", "created_at"]
+    try:
+        header = ws.row_values(1)
+    except Exception:
+        header = []
+    if header != cols:
+        ws.clear()
+        ws.update(range_name="A1", values=[cols])
+
+
+def _open_ws(client: gspread.Client) -> gspread.Worksheet:
     sh = client.open_by_key(SHEET_ID)
     ws = _get_target_ws(sh)
     ensure_records_header(ws)
     return ws
 
 
-def ensure_records_header(ws):
-    cols = ["date", "item"]
-    for s in range(1, NUM_SETS+1):
-        cols += [f"set{s}_kg", f"set{s}_reps"]
-    cols += ["note", "total_volume_kg", "created_at"]
-    try:
-        first_row = ws.row_values(1)
-    except Exception:
-        first_row = []
-    if first_row != cols:
-        ws.clear()
-        ws.update(range_name="A1", values=[cols])
-
-
 def read_cloud_df() -> Optional[pd.DataFrame]:
-    """用 get_all_values 讀取；若只有表頭回傳空 DF 但保留欄位。"""
     global CLOUD_LAST_ERROR
-    client = _gs_client()
-    if not client:
+    cli = _gs_client()
+    if not cli:
         CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
         return None
     try:
-        ws = _open_or_create_ws(client)
+        ws = _open_ws(cli)
         rows = ws.get_all_values()
         if not rows:
             return None
         header = rows[0]
         data = rows[1:] if len(rows) > 1 else []
-        if not header:
-            return None
-        if not data:
-            df = pd.DataFrame(columns=header)
-        else:
-            df = pd.DataFrame(data, columns=header)
-        # 嘗試轉數值欄型態
-        for s in range(1, NUM_SETS+1):
+        df = pd.DataFrame(data, columns=header) if data else pd.DataFrame(columns=header)
+        # 數值欄轉型
+        for s in range(1, NUM_SETS + 1):
             for sub in ("kg", "reps"):
                 col = f"set{s}_{sub}"
                 if col in df.columns:
@@ -145,23 +143,20 @@ def read_cloud_df() -> Optional[pd.DataFrame]:
 
 
 def write_cloud_df(df: pd.DataFrame) -> Tuple[bool, int]:
-    """直接 ws.update(range_name='A1', values=...)；回傳 (成功與否, 寫入列數)。"""
     global CLOUD_LAST_ERROR
-    client = _gs_client()
-    if not client:
+    cli = _gs_client()
+    if not cli:
         CLOUD_LAST_ERROR = "無法建立 Google 憑證（未設定 service account 或檔案路徑）。"
         return False, 0
     try:
-        ws = _open_or_create_ws(client)
-        cols = ["date", "item"] + sum(([f"set{s}_kg", f"set{s}_reps"] for s in range(1, NUM_SETS+1)), []) + ["note", "total_volume_kg", "created_at"]
-        out_df = df.copy()
+        ws = _open_ws(cli)
+        cols = ["date", "item"] + sum(([f"set{s}_kg", f"set{s}_reps"] for s in range(1, NUM_SETS + 1)), []) + ["note", "total_volume_kg", "created_at"]
+        out = df.copy()
         for c in cols:
-            if c not in out_df.columns:
-                out_df[c] = ""
-        out_df = out_df[cols].fillna("")
-        values = []
-        for row in out_df.values.tolist():
-            values.append([x if isinstance(x, (int, float, str)) else ("" if x is None else str(x)) for x in row])
+            if c not in out.columns:
+                out[c] = ""
+        out = out[cols].fillna("")
+        values = [[x if isinstance(x, (int, float, str)) else ("" if x is None else str(x)) for x in row] for row in out.values.tolist()]
         ws.clear()
         ws.update(range_name="A1", values=[cols] + values)
         try:
@@ -174,12 +169,12 @@ def write_cloud_df(df: pd.DataFrame) -> Tuple[bool, int]:
         CLOUD_LAST_ERROR = f"寫入雲端失敗：{e}"
         return False, 0
 
-# ------------ 本地 CSV 備援 ------------
+# 本地 CSV 備援
 
 def ensure_records_csv():
     if not RECORDS_CSV.exists():
         cols = ["date", "item"]
-        for s in range(1, NUM_SETS+1):
+        for s in range(1, NUM_SETS + 1):
             cols += [f"set{s}_kg", f"set{s}_reps"]
         cols += ["note", "total_volume_kg", "created_at"]
         pd.DataFrame(columns=cols).to_csv(RECORDS_CSV, index=False, encoding="utf-8")
@@ -196,33 +191,28 @@ def load_local_df() -> pd.DataFrame:
 def write_local_df(df: pd.DataFrame):
     df.to_csv(RECORDS_CSV, index=False, encoding="utf-8")
 
-
-# ------------ 優先雲端 & 狀態行 ------------
+# 封裝：讀寫優先雲端
 
 def load_records_df() -> pd.DataFrame:
     df = read_cloud_df()
-    if df is not None:
-        return df
-    return load_local_df()
+    return df if df is not None else load_local_df()
 
 
 def save_records_df(df: pd.DataFrame) -> Tuple[bool, int]:
-    ok_cloud, total_rows = write_cloud_df(df)
+    ok, rows = write_cloud_df(df)
     write_local_df(df)
-    return ok_cloud, total_rows
+    return ok, rows
 
 
 def cloud_status_line() -> str:
     df = read_cloud_df()
     target = CLOUD_WS_TITLE or SHEET_TITLE_ENV
-    cloud_status = "已連線至雲端試算表 ✅" if df is not None else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
-    try:
-        count = 0 if df is None else len(df)
-    except Exception:
-        count = 0
-    return f"**Cloud**：{cloud_status}，分頁：{target}，目前列數：{count}"
+    ok = df is not None
+    count = 0 if df is None else len(df)
+    status = "已連線至雲端試算表 ✅" if ok else f"未連線至雲端（改用本機備援）❌  {CLOUD_LAST_ERROR}"
+    return f"**Cloud**：{status}，分頁：{target}，目前列數：{count}"
 
-# ------------ 其他工具 ------------
+# ---------------- 小工具 ----------------
 
 def load_known_items() -> List[str]:
     if ITEMS_JSON.exists():
@@ -234,7 +224,7 @@ def load_known_items() -> List[str]:
 
 
 def save_known_items(items: List[str]):
-    uniq = []
+    uniq: List[str] = []
     for it in items:
         it = (it or "").strip()
         if it and it not in uniq:
@@ -290,13 +280,13 @@ def compute_total_volume(kg_list: List[float|None], reps_list: List[int|None]) -
 def hash_entry(row: dict) -> str:
     key = json.dumps({k: row.get(k) for k in [
         "date", "item",
-        *[f"set{i}_kg" for i in range(1, NUM_SETS+1)],
-        *[f"set{i}_reps" for i in range(1, NUM_SETS+1)],
-        "note"
+        *[f"set{i}_kg" for i in range(1, NUM_SETS + 1)],
+        *[f"set{i}_reps" for i in range(1, NUM_SETS + 1)],
+        "note",
     ]}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-# ------------ 時間格式：台北時區 + 上午/下午/晚上 + 12 小時制（去掉小時前導零） ------------
+# 時間顯示（台北時區、上午/下午/晚上、12 小時制、不補 0）
 
 def to_tpe_time_str(created_at: str) -> str:
     if not created_at:
@@ -307,66 +297,61 @@ def to_tpe_time_str(created_at: str) -> str:
         try:
             ts = pd.to_datetime(created_at)
             if ts.tzinfo is None:
-                ts = ts.tz_localize('UTC')
+                ts = ts.tz_localize("UTC")
         except Exception:
             return ""
     try:
-        tpe = ts.tz_convert('Asia/Taipei')
-        hour24 = int(tpe.strftime('%H'))
-        minute = tpe.strftime('%M')
-        if 18 <= hour24 <= 23:
-            period = '晚上'
-        elif 12 <= hour24 <= 17:
-            period = '下午'
-        else:
-            period = '上午'
-        hour12 = ((hour24 - 1) % 12) + 1
-        return f"{period} {hour12}:{minute}"
+        tpe = ts.tz_convert("Asia/Taipei")
+        h24 = int(tpe.strftime("%H"))
+        m = tpe.strftime("%M")
+        period = "上午"
+        if 12 <= h24 <= 17:
+            period = "下午"
+        elif 18 <= h24 <= 23:
+            period = "晚上"
+        h12 = ((h24 - 1) % 12) + 1
+        return f"{period} {h12}:{m}"
     except Exception:
         return ""
 
-# ------------ HTML（五行 Set；Note 另起一行；不更動雲端欄位） ------------
+# ---------------- HTML 呈現（五行 + Note 另起一行） ----------------
 
 def df_to_html_compact5(df: pd.DataFrame) -> str:
-    """將紀錄以五行 set + Note 獨立一行顯示為 HTML，並盡量避免換行。"""
     if df is None or df.empty:
         return "<div class='records-empty'>目前沒有紀錄</div>"
-    # 確保 note 在最後
     if "note" in df.columns:
         cols = [c for c in df.columns if c != "note"] + ["note"]
         df = df[cols]
 
-    cards: list[str] = []
+    cards: List[str] = []
     for _, row in df.iterrows():
-        date_s = (row.get("date") or "")
-        item_s = (row.get("item") or "")
-        note_s = (row.get("note") or "")
-        total_s = _fmt_num(row.get("total_volume_kg"))
-        created_s = (row.get("created_at") or "")
+        date_s = row.get("date", "") or ""
+        item_s = row.get("item", "") or ""
+        note_s = row.get("note", "") or ""
+        total_s = _fmt_num(row.get("total_volume_kg", ""))
+        created_s = row.get("created_at", "") or ""
         time_tpe = to_tpe_time_str(created_s)
 
-        # 五行：set1..set5
-        set_rows: list[str] = []
+        set_lines: List[str] = []
         for i in range(1, NUM_SETS + 1):
-            kg = _fmt_num(row.get(f"set{i}_kg"))
-            rp = _fmt_num(row.get(f"set{i}_reps"))
+            kg = _fmt_num(row.get(f"set{i}_kg", ""))
+            rp = _fmt_num(row.get(f"set{i}_reps", ""))
             kg_txt = (kg + "kg") if kg else ""
             rp_txt = (rp + "r") if rp else ""
-            set_rows.append(
+            set_lines.append(
                 f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>"
             )
-        lines_html = "".join(set_rows)
+        lines_html = "".join(set_lines)
         note_html = (
             f"<tr class='note-row'><td class='note-cell' colspan='3'>"
-            f"<b>Note：</b>{html.escape(str(note_s))}"
-            f"<span class='time'>（{html.escape(time_tpe)}）</span>"
+            f"<b>Note：</b>{html.escape(str(note_s))}<span class='time'>（{html.escape(time_tpe)}）</span>"
             f"</td></tr>"
         )
 
         header_left = html.escape(str(date_s)) + " · " + html.escape(str(item_s))
         header_right = ("Σ " + html.escape(str(total_s)) + " kg") if total_s else ""
 
-        card = (
+        card_html = (
             "<div class='rec-card'>"
             "<div class='rec-header'>"
             f"<div class='left nowrap'>{header_left}</div>"
@@ -377,17 +362,16 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
             "</tbody></table>"
             "</div>"
         )
-        cards.append(card)
+        cards.append(card_html)
 
-    outer = "<div class='records-cards'>" + "".join(cards) + "</div>"
-    return outer
+    return "<div class='records-cards'>" + "".join(cards) + "</div>"
 
-# ------------ 儲存（覆寫與重複判斷 + 回傳 HTML） ------------
+# ---------------- 儲存邏輯 ----------------
 
 def save_button_clicked(date_str: str, item_name: str,
                         set1kg, set1reps, set2kg, set2reps, set3kg, set3reps, set4kg, set4reps, set5kg, set5reps,
                         note: str):
-    # 解析日期（若空白，預設今天）
+    # 日期（空白→今天）
     if not date_str or not str(date_str).strip():
         dt = date.today()
     else:
@@ -400,10 +384,8 @@ def save_button_clicked(date_str: str, item_name: str,
     if not item_name:
         return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), "", gr.update(), cloud_status_line()
 
-    def to_f(x):
-        return None if x in ("", None) else float(x)
-    def to_i(x):
-        return None if x in ("", None) else int(x)
+    to_f = lambda x: None if x in ("", None) else float(x)
+    to_i = lambda x: None if x in ("", None) else int(x)
 
     kg_vals = [to_f(set1kg), to_f(set2kg), to_f(set3kg), to_f(set4kg), to_f(set5kg)]
     reps_vals = [to_i(set1reps), to_i(set2reps), to_i(set3reps), to_i(set4reps), to_i(set5reps)]
@@ -423,30 +405,30 @@ def save_button_clicked(date_str: str, item_name: str,
         "total_volume_kg": total_volume,
         "created_at": now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
     }
-    new_hash = hash_entry(new_row)
 
-    # 讀現有
+    new_hash = hash_entry(new_row)
     df = load_records_df()
 
-    # 找最近同日+同 item
+    # 找同日同 item 最近一筆
     idx_recent = None
     recent_row = None
     if df is not None and not df.empty:
         try:
-            df_tmp = df.copy()
-            df_tmp["created_at_dt"] = pd.to_datetime(df_tmp.get("created_at"), errors="coerce")
-            mask = (df_tmp["date"].astype(str) == new_row["date"]) & (df_tmp["item"].astype(str) == new_row["item"])
-            df_same = df_tmp[mask].sort_values("created_at_dt", ascending=False)
-            if not df_same.empty:
-                idx_recent = df_same.index[0]
+            tmp = df.copy()
+            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce")
+            same = (tmp["date"].astype(str) == new_row["date"]) & (tmp["item"].astype(str) == new_row["item"])
+            same_df = tmp[same].sort_values("created_at_dt", ascending=False)
+            if not same_df.empty:
+                idx_recent = same_df.index[0]
                 recent_row = df.loc[idx_recent].to_dict()
         except Exception:
             pass
 
     if recent_row is not None and hash_entry(recent_row) == new_hash:
-        merged_choices = get_all_item_choices()
+        merged = get_all_item_choices()
         latest = load_records_df()
-        return ("內容未變更：未儲存。", gr.update(choices=merged_choices), df_to_html_compact5(latest.tail(20)), gr.update(interactive=False), cloud_status_line())
+        latest_html = df_to_html_compact5(latest.tail(20)) if latest is not None and not latest.empty else ""
+        return ("內容未變更：未儲存。", gr.update(choices=merged), latest_html, gr.update(interactive=False), cloud_status_line())
 
     replaced = False
     if recent_row is not None:
@@ -460,7 +442,6 @@ def save_button_clicked(date_str: str, item_name: str,
 
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
 
-    # note 放最後一欄
     if "note" in df.columns:
         cols = [c for c in df.columns if c != "note"] + ["note"]
         df = df[cols]
@@ -479,13 +460,14 @@ def save_button_clicked(date_str: str, item_name: str,
         known.append(item_name)
         save_known_items(known)
 
-    merged_choices = get_all_item_choices()
+    merged = get_all_item_choices()
     latest = load_records_df()
-    return (msg, gr.update(choices=merged_choices), df_to_html_compact5(latest.tail(20)), gr.update(interactive=True), cloud_status_line())
+    latest_html = df_to_html_compact5(latest.tail(20)) if latest is not None and not latest.empty else ""
+    return (msg, gr.update(choices=merged), latest_html, gr.update(interactive=True), cloud_status_line())
 
-# ------------ 搜尋 ------------
+# ---------------- 搜尋 ----------------
 
-def search_records(date_from: str, date_to: str, item_filter: str):
+def search_records(date_from: str, date_to: str, item_filter: str) -> pd.DataFrame:
     df = load_records_df()
     if date_from:
         try:
@@ -512,10 +494,10 @@ def search_records(date_from: str, date_to: str, item_filter: str):
     return df
 
 
-def search_records_html(date_from: str, date_to: str, item_filter: str):
+def search_records_html(date_from: str, date_to: str, item_filter: str) -> str:
     return df_to_html_compact5(search_records(date_from, date_to, item_filter))
 
-# ------------ 教練資料摘要（提供給 Groq） ------------
+# ---------------- 教練上下文 ----------------
 
 def _truncate(s: str, n: int) -> str:
     s = str(s or "")
@@ -527,7 +509,6 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
     if df is None or df.empty:
         return "（目前沒有雲端紀錄）"
     f = df.copy()
-    # 日期過濾
     try:
         f["date_dt"] = pd.to_datetime(f["date"], errors="coerce")
         cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=days)
@@ -536,7 +517,7 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         pass
     if f.empty:
         return f"（最近 {days} 天沒有紀錄）"
-    # 每項目統計
+
     lines = [f"期間：最近 {days} 天"]
     try:
         vol = f.groupby("item", dropna=False)["total_volume_kg"].sum(min_count=1).sort_values(ascending=False)
@@ -546,11 +527,11 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         cnt = f["item"].value_counts()
     except Exception:
         cnt = pd.Series(dtype=int)
-    # 最近日期
     try:
         last_date = f.groupby("item", dropna=False)["date"].max()
     except Exception:
         last_date = pd.Series(dtype=str)
+
     items = list(cnt.index[:max_items]) if not cnt.empty else f["item"].dropna().unique().tolist()[:max_items]
     for it in items:
         c = int(cnt.get(it, 0)) if not cnt.empty else 0
@@ -558,15 +539,16 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         v_txt = _fmt_num(v)
         ld = last_date.get(it, "") if not last_date.empty else ""
         lines.append(f"- {it}: 次數 {c}，總量 {v_txt} kg，最近 {ld}")
-    # 最近幾筆（精簡）
+
     try:
         f["created_at_dt"] = pd.to_datetime(f["created_at"], errors="coerce")
         recent = f.sort_values("created_at_dt", ascending=False).head(max_recent)
     except Exception:
         recent = f.tail(max_recent)
+
     lines.append("最近幾筆：")
     for _, r in recent.iterrows():
-        parts = []
+        parts: List[str] = []
         for i in range(1, NUM_SETS + 1):
             kg = _fmt_num(r.get(f"set{i}_kg"))
             rp = _fmt_num(r.get(f"set{i}_reps"))
@@ -579,7 +561,7 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
     return "
 ".join(lines)
 
-# ------------ 教練機器人（串流，支援上下文） ------------
+# ---------------- 教練（串流） ----------------
 
 def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
     msg = (user_msg or "").strip()
@@ -587,16 +569,14 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
         yield history, ""
         return
     if groq_client is None:
-        bot_text = "（尚未設定環境變數 groq_key，請設定後重試。）"
-        # messages 型式：list[dict]
+        bot = "（尚未設定環境變數 groq_key，請設定後重試。）"
         if isinstance(history, list) and (not history or isinstance(history[0], dict)):
-            ui = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": bot_text}]
+            ui = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": bot}]
         else:
-            ui = (history or []) + [[msg, bot_text]]
+            ui = (history or []) + [[msg, bot]]
         yield ui, ""
         return
 
-    # 構建發給 Groq 的訊息
     sys_content = SYSTEM_PROMPT
     if use_ctx:
         try:
@@ -609,26 +589,24 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
 " + ctx
 
     api_messages = [{"role": "system", "content": sys_content}]
-    # 將歷史對話轉為 user/assistant 交替
+
     if isinstance(history, list) and history and isinstance(history[0], dict):
         for m in history:
             if m.get("role") in ("user", "assistant"):
                 api_messages.append({"role": m.get("role"), "content": m.get("content", "")})
-        ui_history = history.copy()
+        ui_hist = history.copy()
     else:
-        # 舊的 (user, bot) tuples
         for u, b in (history or []):
             if u:
                 api_messages.append({"role": "user", "content": u})
             if b:
                 api_messages.append({"role": "assistant", "content": b})
-        # 轉為 messages 風格供 UI 使用
-        ui_history = []
+        ui_hist = []
         for u, b in (history or []):
             if u:
-                ui_history.append({"role": "user", "content": u})
+                ui_hist.append({"role": "user", "content": u})
             if b:
-                ui_history.append({"role": "assistant", "content": b})
+                ui_hist.append({"role": "assistant", "content": b})
 
     api_messages.append({"role": "user", "content": msg})
 
@@ -642,21 +620,20 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
             stream=True,
             stop=None,
         )
-        # UI 歷史：加上使用者訊息與空白助理訊息
-        ui_history = ui_history + [{"role": "user", "content": msg}, {"role": "assistant", "content": ""}]
+        ui_hist = ui_hist + [{"role": "user", "content": msg}, {"role": "assistant", "content": ""}]
         acc = ""
         for chunk in completion:
             delta = chunk.choices[0].delta.content or ""
             if delta:
                 acc += delta
-                ui_history[-1]["content"] = acc
-                yield ui_history, ""
+                ui_hist[-1]["content"] = acc
+                yield ui_hist, ""
         return
     except Exception as e:
-        ui_history = ui_history + [{"role": "user", "content": msg}, {"role": "assistant", "content": f"抱歉，Groq 呼叫失敗：{e}"}]
-        yield ui_history, ""
+        ui_hist = ui_hist + [{"role": "user", "content": msg}, {"role": "assistant", "content": f"抱歉，Groq 呼叫失敗：{e}"}]
+        yield ui_hist, ""
 
-# ------------ CSS：行動版五行卡片、粗線分隔、避免換行 ------------
+# ---------------- CSS ----------------
 CSS = """
 .records-cards { display: grid; gap: 10px; }
 .rec-card { border-bottom: 4px solid rgba(255,255,255,0.35); padding: 8px 6px; }
@@ -676,26 +653,22 @@ CSS = """
 }
 """
 
-# ------------ 介面 ------------
+# ---------------- 介面 ----------------
 
-def _today_iso():
+def _today_iso() -> str:
     return date.today().isoformat()
 
 with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
     gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
 快速記錄重量訓練與查詢歷史。""")
 
-    # 雲端狀態提示（可動態更新）
     cloud_md = gr.Markdown(cloud_status_line())
 
     with gr.Tabs():
-        # ---- Log ----
         with gr.TabItem("Log"):
             date_in = gr.Textbox(value="", label="Date (YYYY-MM-DD)")
 
-            item_choices = get_all_item_choices()
-            gr.Markdown("### Item")
-            item_dd = gr.Dropdown(choices=item_choices, allow_custom_value=True, value=None, label="Item 名稱")
+            item_dd = gr.Dropdown(choices=get_all_item_choices(), allow_custom_value=True, value=None, label="Item 名稱")
 
             with gr.Row():
                 set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
@@ -717,8 +690,8 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 
             save_btn = gr.Button("💾 Save", variant="primary")
             status_md = gr.Markdown("")
-            current_df = load_records_df()
-            latest_html = gr.HTML(value=df_to_html_compact5(current_df.tail(20)) if (current_df is not None and not current_df.empty) else "", label="最近 20 筆紀錄")
+            cur = load_records_df()
+            latest_html = gr.HTML(value=(df_to_html_compact5(cur.tail(20)) if (cur is not None and not cur.empty) else ""), label="最近 20 筆紀錄")
 
             save_btn.click(
                 fn=save_button_clicked,
@@ -728,10 +701,8 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
                 outputs=[status_md, item_dd, latest_html, save_btn, cloud_md],
             )
 
-            # 每次頁面載入時自動填入今天日期
             demo.load(fn=_today_iso, inputs=None, outputs=date_in)
 
-        # ---- Records ----
         with gr.TabItem("Records"):
             with gr.Row():
                 q_from = gr.Textbox(label="From (YYYY-MM-DD)")
@@ -741,7 +712,6 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
             out_html = gr.HTML(value=df_to_html_compact5(load_records_df()), label="搜尋結果")
             query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
 
-        # ---- 你的教練 ----
         with gr.TabItem("你的教練"):
             chatbot = gr.Chatbot(height=420, type='messages')
             user_in = gr.Textbox(placeholder="輸入你的問題，按 Enter 或點送出…", label="訊息")
