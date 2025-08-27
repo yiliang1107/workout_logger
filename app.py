@@ -560,7 +560,6 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg")
     return "
 ".join(lines)
-
 # ---------------- 教練（串流） ----------------
 
 def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
