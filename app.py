@@ -323,29 +323,29 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
         cols = [c for c in df.columns if c != "note"] + ["note"]
         df = df[cols]
 
-    cards: List[str] = []
+    cards = []
     for _, row in df.iterrows():
-        date_s = row.get("date", "") or ""
-        item_s = row.get("item", "") or ""
-        note_s = row.get("note", "") or ""
-        total_s = _fmt_num(row.get("total_volume_kg", ""))
-        created_s = row.get("created_at", "") or ""
+        date_s = (row.get("date") or "")
+        item_s = (row.get("item") or "")
+        note_s = (row.get("note") or "")
+        total_s = _fmt_num(row.get("total_volume_kg"))
+        created_s = (row.get("created_at") or "")
         time_tpe = to_tpe_time_str(created_s)
 
-        set_lines: List[str] = []
+        set_lines = []
         for i in range(1, NUM_SETS + 1):
-            kg = _fmt_num(row.get(f"set{i}_kg", ""))
-            rp = _fmt_num(row.get(f"set{i}_reps", ""))
+            kg = _fmt_num(row.get(f"set{i}_kg"))
+            rp = _fmt_num(row.get(f"set{i}_reps"))
             kg_txt = (kg + "kg") if kg else ""
             rp_txt = (rp + "r") if rp else ""
-            set_lines.append(
-                f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>"
-            )
+            set_lines.append(f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>")
+
         lines_html = "".join(set_lines)
         note_html = (
-            f"<tr class='note-row'><td class='note-cell' colspan='3'>"
-            f"<b>Note：</b>{html.escape(str(note_s))}<span class='time'>（{html.escape(time_tpe)}）</span>"
-            f"</td></tr>"
+            "<tr class='note-row'><td class='note-cell' colspan='3'>"
+            + "<b>Note：</b>" + html.escape(str(note_s))
+            + "<span class='time'>（" + html.escape(time_tpe) + "）</span>"
+            + "</td></tr>"
         )
 
         header_left = html.escape(str(date_s)) + " · " + html.escape(str(item_s))
@@ -353,18 +353,19 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
 
         card_html = (
             "<div class='rec-card'>"
-            "<div class='rec-header'>"
-            f"<div class='left nowrap'>{header_left}</div>"
-            f"<div class='right nowrap'>{header_right}</div>"
-            "</div>"
-            "<table class='rec-sets'><tbody>"
-            f"{lines_html}{note_html}"
-            "</tbody></table>"
-            "</div>"
+            + "<div class='rec-header'>"
+            + "<div class='left nowrap'>" + header_left + "</div>"
+            + "<div class='right nowrap'>" + header_right + "</div>"
+            + "</div>"
+            + "<table class='rec-sets'><tbody>"
+            + lines_html + note_html
+            + "</tbody></table>"
+            + "</div>"
         )
         cards.append(card_html)
 
     return "<div class='records-cards'>" + "".join(cards) + "</div>"
+
 
 # ---------------- 儲存邏輯 ----------------
 
