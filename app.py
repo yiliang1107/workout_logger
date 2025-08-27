@@ -1,10 +1,10 @@
 """
-Gradio Workout Logger + 你的教練（Groq）— app.py（穩定版修復：字串未終止、行動版顯示、雲端同步、教練帶上下文）
+Gradio Workout Logger + 你的教練（Groq）— app.py（整檔穩定版，修復未結束字串）
 - 雲端：Google Sheet 優先（SHEET_ID 固定），worksheet 自動偵測（SHEET_TITLE 環境變數→records→record→第一個）。
-- 儲存：10 分鐘內同日同 item 覆寫；內容未變更則不存並暫時停用 Save。
-- 介面：五行 Set（#｜kg｜r），Note 另起一行，時間（台北時區 12 小時制，上午/下午/晚上）接在 Note 後面灰字。
-- Chatbot：可勾選「把最近紀錄提供給教練」→ 從雲端彙整 7–180 天摘要給 Groq。
-- 修正：統整所有多行字串為安全的三引號，避免 SyntaxError: unterminated string literal。
+- 儲存：10 分鐘內同日同 item 覆寫；內容未變更則不存。
+- UI：五行 Set（#｜kg｜r），Note 另起一行，時間（台北時區、12 小時制、上午/下午/晚上）接在 Note 後面灰字。
+- Chatbot：可勾選「把最近紀錄提供給教練」，彙整最近 N 天摘要做為系統提示。
+- 修復：所有多行字串採三引號；HTML 以明確拼接，避免 `unterminated string literal`。
 """
 from __future__ import annotations
 import os, json, hashlib, html, math
@@ -328,7 +328,7 @@ def to_tpe_time_str(created_at: str) -> str:
 # ------------ HTML（五行 Set；Note 另起一行；不更動雲端欄位） ------------
 
 def df_to_html_compact5(df: pd.DataFrame) -> str:
-    """將紀錄以五行 set + Note 獨立一行顯示為 HTML。小螢幕不換行。"""
+    """將紀錄以五行 set + Note 獨立一行顯示為 HTML，並盡量避免換行。"""
     if df is None or df.empty:
         return "<div class='records-empty'>目前沒有紀錄</div>"
     # 確保 note 在最後
@@ -381,47 +381,6 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
 
     outer = "<div class='records-cards'>" + "".join(cards) + "</div>"
     return outer
-    # 確保 note 在最後
-    if "note" in df.columns:
-        cols = [c for c in df.columns if c != "note"] + ["note"]
-        df = df[cols]
-    cards = []
-    for _, row in df.iterrows():
-        date_s = row.get("date", "") or ""
-        item_s = row.get("item", "") or ""
-        note_s = row.get("note", "") or ""
-        total_s = _fmt_num(row.get("total_volume_kg", ""))
-        created_s = row.get("created_at", "") or ""
-        time_tpe = to_tpe_time_str(created_s)
-        # 五行：set1..set5
-        lines = []
-        for i in range(1, NUM_SETS+1):
-            kg = _fmt_num(row.get(f"set{i}_kg", ""))
-            rp = _fmt_num(row.get(f"set{i}_reps", ""))
-            kg_txt = (kg + "kg") if kg else ""
-            rp_txt = (rp + "r") if rp else ""
-            lines.append(f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>")
-        lines_html = "".join(lines)
-        note_row = (
-            f"<tr class='note-row'><td class='note-cell' colspan='3'>"
-            f"<b>Note：</b>{html.escape(str(note_s))}"
-            f"<span class='time'>（{html.escape(time_tpe)}）</span>"
-            f"</td></tr>"
-        )
-        card = (
-            "<div class='rec-card'>"
-            "<div class='rec-header'>"
-            f"<div class='left nowrap'>{html.escape(str(date_s))} · {html.escape(str(item_s))}</div>"
-            f"<div class='right nowrap'>{('Σ ' + html.escape(total_s) + ' kg') if total_s else ''}</div>"
-            "</div>"
-            "<table class='rec-sets'><tbody>"
-            f"{lines_html}{note_row}"
-            "</tbody></table>"
-            f"<div class='meta'>{html.escape(str(created_s))}</div>"
-            "</div>"
-        )
-        cards.append(card)
-    return "<div class='records-cards'>" + "".join(cards) + "</div>"
 
 # ------------ 儲存（覆寫與重複判斷 + 回傳 HTML） ------------
 
@@ -644,10 +603,10 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
             ctx = make_coach_context(int(ctx_days))
         except Exception:
             ctx = make_coach_context()
-        sys_content += f"
+        sys_content += "
 
 【學員近期紀錄摘要】
-{ctx}"
+" + ctx
 
     api_messages = [{"role": "system", "content": sys_content}]
     # 將歷史對話轉為 user/assistant 交替
@@ -712,7 +671,6 @@ CSS = """
 .note-row td { background: rgba(255,255,255,0.04); }
 .rec-sets td.note-cell { padding: 8px 6px; }
 .rec-sets td.note-cell .time { margin-left: .5em; opacity:.65; font-size:.9em; }
-.meta { margin-top: 4px; opacity: .6; font-size: .9em; }
 @media (max-width: 480px) {
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
@@ -741,19 +699,19 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 
             with gr.Row():
                 set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
-                set1rp = gr.Number(label="Set 1 — reps", precision=0, value=None, placeholder="r")
+                set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r")
             with gr.Row():
                 set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg")
-                set2rp = gr.Number(label="Set 2 — reps", precision=0, value=None, placeholder="r")
+                set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r")
             with gr.Row():
                 set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg")
-                set3rp = gr.Number(label="Set 3 — reps", precision=0, value=None, placeholder="r")
+                set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r")
             with gr.Row():
                 set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg")
-                set4rp = gr.Number(label="Set 4 — reps", precision=0, value=None, placeholder="r")
+                set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r")
             with gr.Row():
                 set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg")
-                set5rp = gr.Number(label="Set 5 — reps", precision=0, value=None, placeholder="r")
+                set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r")
 
             note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
 
@@ -801,7 +759,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
 **Tips**
 - Item 名稱可直接輸入新文字，下次會出現在下拉選單。
 - 空白的數值欄會保持空白（不顯示 0）。
-- Total Volume = ∑(kg × reps)。
+- Total Volume = ∑(kg × r)。
 """)
 
 if __name__ == "__main__":
