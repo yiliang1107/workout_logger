@@ -586,143 +586,161 @@ def search_records(date_from: str, date_to: str, item_filter: str):
 def search_records_html(date_from: str, date_to: str, item_filter: str):
     return df_to_html_compact5(search_records(date_from, date_to, item_filter))
 
+# ------------ 教練資料摘要（提供給 Groq） ------------
+
+def _truncate(s: str, n: int) -> str:
+    s = str(s or "")
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10) -> str:
+    df = load_records_df()
+    if df is None or df.empty:
+        return "（目前沒有雲端紀錄）"
+    f = df.copy()
+    # 日期過濾
+    try:
+        f["date_dt"] = pd.to_datetime(f["date"], errors="coerce")
+        cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=days)
+        f = f[f["date_dt"] >= cutoff]
+    except Exception:
+        pass
+    if f.empty:
+        return f"（最近 {days} 天沒有紀錄）"
+    # 每項目統計
+    lines = [f"期間：最近 {days} 天"]
+    try:
+        vol = f.groupby("item", dropna=False)["total_volume_kg"].sum(min_count=1).sort_values(ascending=False)
+    except Exception:
+        vol = pd.Series(dtype=float)
+    try:
+        cnt = f["item"].value_counts()
+    except Exception:
+        cnt = pd.Series(dtype=int)
+    # 最近日期
+    try:
+        last_date = f.groupby("item", dropna=False)["date"].max()
+    except Exception:
+        last_date = pd.Series(dtype=str)
+    items = list(cnt.index[:max_items]) if not cnt.empty else f["item"].dropna().unique().tolist()[:max_items]
+    for it in items:
+        c = int(cnt.get(it, 0)) if not cnt.empty else 0
+        v = vol.get(it, float('nan')) if not vol.empty else float('nan')
+        v_txt = _fmt_num(v)
+        ld = last_date.get(it, "") if not last_date.empty else ""
+        lines.append(f"- {it}: 次數 {c}，總量 {v_txt} kg，最近 {ld}")
+    # 最近幾筆（精簡）
+    try:
+        f["created_at_dt"] = pd.to_datetime(f["created_at"], errors="coerce")
+        recent = f.sort_values("created_at_dt", ascending=False).head(max_recent)
+    except Exception:
+        recent = f.tail(max_recent)
+    lines.append("最近幾筆：")
+    for _, r in recent.iterrows():
+        parts = []
+        for i in range(1, NUM_SETS + 1):
+            kg = _fmt_num(r.get(f"set{i}_kg"))
+            rp = _fmt_num(r.get(f"set{i}_reps"))
+            if kg and rp:
+                parts.append(f"{kg}x{rp}")
+        sets_txt = "/".join(parts)
+        note_txt = _truncate(r.get("note", ""), 40)
+        total_txt = _fmt_num(r.get("total_volume_kg"))
+        lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg")
+    return "
+".join(lines):
+    return df_to_html_compact5(search_records(date_from, date_to, item_filter))
+
 # ------------ 教練機器人（串流） ------------
 
-def coach_chat_stream(history: list[list[str]], user_msg: str):
+def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
     msg = (user_msg or "").strip()
     if not msg:
         yield history, ""
         return
     if groq_client is None:
         bot_text = "（尚未設定環境變數 groq_key，請設定後重試。）"
-        history = history + [[msg, bot_text]]
-        yield history, ""
+        # messages 型式：list[dict]
+        if isinstance(history, list) and (not history or isinstance(history[0], dict)):
+            ui = history + [{"role": "user", "content": msg}, {"role": "assistant", "content": bot_text}]
+        else:
+            ui = (history or []) + [[msg, bot_text]]
+        yield ui, ""
         return
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for u, b in history:
-        if u:
-            messages.append({"role": "user", "content": u})
-        if b:
-            messages.append({"role": "assistant", "content": b})
-    messages.append({"role": "user", "content": msg})
+
+    # 構建發給 Groq 的訊息
+    sys_content = SYSTEM_PROMPT
+    if use_ctx:
+        try:
+            ctx = make_coach_context(int(ctx_days))
+        except Exception:
+            ctx = make_coach_context()
+        sys_content += f"
+
+【學員近期紀錄摘要】
+{ctx}"
+
+    api_messages = [{"role": "system", "content": sys_content}]
+    # 將歷史對話轉為 user/assistant 交替
+    if isinstance(history, list) and history and isinstance(history[0], dict):
+        for m in history:
+            if m.get("role") in ("user", "assistant"):
+                api_messages.append({"role": m.get("role"), "content": m.get("content", "")})
+        ui_history = history.copy()
+    else:
+        # 舊的 (user, bot) tuples
+        for u, b in (history or []):
+            if u:
+                api_messages.append({"role": "user", "content": u})
+            if b:
+                api_messages.append({"role": "assistant", "content": b})
+        # 轉為 messages 風格供 UI 使用
+        ui_history = []
+        for u, b in (history or []):
+            if u:
+                ui_history.append({"role": "user", "content": u})
+            if b:
+                ui_history.append({"role": "assistant", "content": b})
+
+    api_messages.append({"role": "user", "content": msg})
+
     try:
         completion = groq_client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=messages,
+            messages=api_messages,
             temperature=0.7,
             max_completion_tokens=512,
             top_p=1,
             stream=True,
             stop=None,
         )
-        bot_resp = ""
-        history = history + [[msg, ""]]
+        # UI 歷史：加上使用者訊息與空白助理訊息
+        ui_history = ui_history + [{"role": "user", "content": msg}, {"role": "assistant", "content": ""}]
+        acc = ""
         for chunk in completion:
             delta = chunk.choices[0].delta.content or ""
             if delta:
-                bot_resp += delta
-                history[-1][1] = bot_resp
-                yield history, ""
+                acc += delta
+                ui_history[-1]["content"] = acc
+                yield ui_history, ""
         return
     except Exception as e:
-        history = history + [[msg, f"抱歉，Groq 呼叫失敗：{e}"]]
-        yield history, ""
+        ui_history = ui_history + [{"role": "user", "content": msg}, {"role": "assistant", "content": f"抱歉，Groq 呼叫失敗：{e}"}]
+        yield ui_history, ""
 
-# ------------ CSS（行動版友善 Note 顯示）------------
-CSS = """
-.records-cards { display: grid; gap: 10px; }
-.rec-card { border-bottom: 4px solid rgba(255,255,255,0.35); padding: 8px 6px; }
-.rec-header { display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
-.rec-header .left { font-weight: 600; }
-.rec-header .right { opacity: .8; font-size: .95em; }
-.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rec-sets { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.rec-sets td { border: 1px solid rgba(255,255,255,0.15); padding: 4px; vertical-align: top; }
-.rec-sets td.sidx { width: 26px; text-align: center; opacity: .8; }
-.rec-sets td.kg, .rec-sets td.r { width: 56px; }
-.note-row td { background: rgba(255,255,255,0.04); }
-.rec-sets td.note-cell { padding: 8px 6px; }
-.rec-sets td.note-cell .time { margin-left: .5em; opacity:.65; font-size:.9em; }
-@media (max-width: 480px) {
-  .rec-sets td.kg, .rec-sets td.r { width: 48px; }
-}
-"""
-
-# ------------ 介面 ------------
-# 每次使用者開啟介面時，將日期自動帶入今天
-def _today_iso():
-    return date.today().isoformat()
-
-with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
-    gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
-快速記錄重量訓練與查詢歷史。""")
-
-    # 雲端狀態提示（可動態更新）
-    cloud_md = gr.Markdown(cloud_status_line())
-
-    with gr.Tabs():
-        # ---- Log ----
-        with gr.TabItem("Log"):
-            date_in = gr.Textbox(value="", label="Date (YYYY-MM-DD)")
-
-            item_choices = get_all_item_choices()
-            gr.Markdown("### Item")
-            item_dd = gr.Dropdown(choices=item_choices, allow_custom_value=True, value=None, label="Item 名稱")
-
-            with gr.Row():
-                set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
-                set1rp = gr.Number(label="Set 1 — reps", precision=0, value=None, placeholder="reps")
-            with gr.Row():
-                set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg")
-                set2rp = gr.Number(label="Set 2 — reps", precision=0, value=None, placeholder="reps")
-            with gr.Row():
-                set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg")
-                set3rp = gr.Number(label="Set 3 — reps", precision=0, value=None, placeholder="reps")
-            with gr.Row():
-                set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg")
-                set4rp = gr.Number(label="Set 4 — reps", precision=0, value=None, placeholder="reps")
-            with gr.Row():
-                set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg")
-                set5rp = gr.Number(label="Set 5 — reps", precision=0, value=None, placeholder="reps")
-
-            note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
-
-            save_btn = gr.Button("💾 Save", variant="primary")
-            status_md = gr.Markdown("")
-            current_df = load_records_df()
-            latest_html = gr.HTML(value=df_to_html_compact5(current_df.tail(20)) if not current_df.empty else "", label="最近 20 筆紀錄")
-
-            save_btn.click(
-                fn=save_button_clicked,
-                inputs=[date_in, item_dd,
-                        set1kg, set1rp, set2kg, set2rp, set3kg, set3rp, set4kg, set4rp, set5kg, set5rp,
-                        note_in],
-                outputs=[status_md, item_dd, latest_html, save_btn, cloud_md],
-            )
-
-            # 每次頁面載入（每位使用者各自的 session）時自動填入今天日期
-            demo.load(fn=_today_iso, inputs=None, outputs=date_in)
-
-        # ---- Records ----
-        with gr.TabItem("Records"):
-            with gr.Row():
-                q_from = gr.Textbox(label="From (YYYY-MM-DD)")
-                q_to = gr.Textbox(label="To (YYYY-MM-DD)")
-                q_item = gr.Textbox(label="Item 包含（關鍵字）")
-            query_btn = gr.Button("🔎 Search")
-            out_html = gr.HTML(value=df_to_html_compact5(load_records_df()), label="搜尋結果")
-            query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
-
-        # ---- 你的教練 ----
-        with gr.TabItem("你的教練"):
+with gr.TabItem("你的教練"):
             chatbot = gr.Chatbot(height=420, type='messages')
             user_in = gr.Textbox(placeholder="輸入你的問題，按 Enter 或點送出…", label="訊息")
             with gr.Row():
+                use_ctx = gr.Checkbox(value=True, label="把最近紀錄提供給教練")
+                ctx_days = gr.Slider(7, 180, value=60, step=1, label="最近（天）")
+            with gr.Row():
                 send_btn = gr.Button("送出", variant="primary")
                 clear_btn = gr.Button("清空")
-            send_btn.click(coach_chat_stream, inputs=[chatbot, user_in], outputs=[chatbot, user_in])
-            user_in.submit(coach_chat_stream, inputs=[chatbot, user_in], outputs=[chatbot, user_in])
+            send_btn.click(coach_chat_stream_ctx, inputs=[chatbot, user_in, use_ctx, ctx_days], outputs=[chatbot, user_in])
+            user_in.submit(coach_chat_stream_ctx, inputs=[chatbot, user_in, use_ctx, ctx_days], outputs=[chatbot, user_in])
             clear_btn.click(lambda: ([], ""), None, [chatbot, user_in], queue=False)
+lambda: ([], ""), None, [chatbot, user_in], queue=False)
 
     gr.Markdown("""---
 **Tips**
