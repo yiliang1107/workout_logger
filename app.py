@@ -1,9 +1,10 @@
 """
-Gradio Workout Logger + 你的教練（Groq）— app.py（行動版 Note 顯示最佳化 + 雲端）
-- 直接連 Google Sheet（SHEET_ID 固定，Worksheet 自動偵測 records/record/第一個分頁）。
-- 10 分鐘內同日期+同 item 覆寫；內容相同不重存並暫時停用 Save。
-- 所有列表（最近 20 筆、搜尋結果）改為 **兩列一筆** 的 HTML 表格：第二列專門放 Note，滿版顯示，行動裝置不會被吃掉。
-- Google Sheet 的儲存格式維持原本欄位（note 為單一欄），只是在 UI 以兩列呈現。
+Gradio Workout Logger + 你的教練（Groq）— app.py（穩定版修復：字串未終止、行動版顯示、雲端同步、教練帶上下文）
+- 雲端：Google Sheet 優先（SHEET_ID 固定），worksheet 自動偵測（SHEET_TITLE 環境變數→records→record→第一個）。
+- 儲存：10 分鐘內同日同 item 覆寫；內容未變更則不存並暫時停用 Save。
+- 介面：五行 Set（#｜kg｜r），Note 另起一行，時間（台北時區 12 小時制，上午/下午/晚上）接在 Note 後面灰字。
+- Chatbot：可勾選「把最近紀錄提供給教練」→ 從雲端彙整 7–180 天摘要給 Groq。
+- 修正：統整所有多行字串為安全的三引號，避免 SyntaxError: unterminated string literal。
 """
 from __future__ import annotations
 import os, json, hashlib, html, math
@@ -72,7 +73,10 @@ def _get_target_ws(sh: gspread.Spreadsheet) -> gspread.Worksheet:
     """優先 SHEET_TITLE_ENV → 'records' → 'record' → 第一個分頁；若沒有則建立 SHEET_TITLE_ENV。"""
     global CLOUD_WS_TITLE
     preferred = [SHEET_TITLE_ENV, "records", "record"]
-    titles = [ws.title for ws in sh.worksheets()]
+    try:
+        titles = [ws.title for ws in sh.worksheets()]
+    except Exception:
+        titles = []
     for name in preferred:
         if name in titles:
             CLOUD_WS_TITLE = name
@@ -259,6 +263,18 @@ def get_all_item_choices() -> List[str]:
     return seen
 
 
+def _fmt_num(n):
+    if n in (None, "", "nan", "NaN", "NAN"):
+        return ""
+    try:
+        f = float(n)
+        if math.isnan(f):
+            return ""
+        return str(int(f)) if float(f).is_integer() else str(f)
+    except Exception:
+        return str(n)
+
+
 def compute_total_volume(kg_list: List[float|None], reps_list: List[int|None]) -> float:
     total = 0.0
     for k, r in zip(kg_list, reps_list):
@@ -280,23 +296,7 @@ def hash_entry(row: dict) -> str:
     ]}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-# ------------ HTML（兩列一筆，第二列放 Note） ------------
-
-def _pretty_name(col: str) -> str:
-    mapping = {"total_volume_kg": "total", "created_at": "created_at"}
-    return mapping.get(col, col)
-
-
-def _fmt_num(n):
-    if n in (None, "", "nan", "NaN", "NAN"):
-        return ""
-    try:
-        f = float(n)
-        if math.isnan(f):
-            return ""
-        return str(int(f)) if float(f).is_integer() else str(f)
-    except Exception:
-        return str(n)
+# ------------ 時間格式：台北時區 + 上午/下午/晚上 + 12 小時制（去掉小時前導零） ------------
 
 def to_tpe_time_str(created_at: str) -> str:
     if not created_at:
@@ -320,96 +320,12 @@ def to_tpe_time_str(created_at: str) -> str:
             period = '下午'
         else:
             period = '上午'
-        # 全部統一 12 小時制，並移除小時的前導 0
         hour12 = ((hour24 - 1) % 12) + 1
         return f"{period} {hour12}:{minute}"
     except Exception:
         return ""
-    try:
-        ts = pd.to_datetime(created_at, utc=True)
-    except Exception:
-        try:
-            ts = pd.to_datetime(created_at)
-            if ts.tzinfo is None:
-                ts = ts.tz_localize('UTC')
-        except Exception:
-            return ""
-    try:
-        tpe = ts.tz_convert('Asia/Taipei')
-        hour24 = int(tpe.strftime('%H'))
-        minute = tpe.strftime('%M')  # 保留兩位數
-        if 18 <= hour24 <= 23:
-            period = '晚上'
-        elif 12 <= hour24 <= 17:
-            period = '下午'
-        else:
-            period = '上午'
-        # 12 小時制（1..12），移除小時前導零
-        hour12 = ((hour24 - 1) % 12) + 1
-        return f"{period} {hour12}:{minute}"
-    except Exception:
-        return ""
-    try:
-        ts = pd.to_datetime(created_at, utc=True)
-    except Exception:
-        try:
-            ts = pd.to_datetime(created_at)
-            if ts.tzinfo is None:
-                ts = ts.tz_localize('UTC')
-        except Exception:
-            return ""
-    try:
-        tpe = ts.tz_convert('Asia/Taipei')
-        hour24 = int(tpe.strftime('%H'))
-        minute = tpe.strftime('%M')
-        if 18 <= hour24 <= 23:
-            period = '晚上'
-        elif 12 <= hour24 <= 17:
-            period = '下午'
-        else:
-            period = '上午'
-        if period in ('下午', '晚上'):
-            hour12 = ((hour24 - 1) % 12) + 1  # 12→12, 13→1, 18→6
-            return f"{period} {hour12}:{minute}"
-        else:
-            # 上午維持 24 小時 HH:MM 顯示
-            return f"{period} {tpe.strftime('%H:%M')}"
-    except Exception:
-        return ""
-    try:
-        ts = pd.to_datetime(created_at, utc=True)
-    except Exception:
-        try:
-            ts = pd.to_datetime(created_at)
-            if ts.tzinfo is None:
-                ts = ts.tz_localize('UTC')
-        except Exception:
-            return ""
-    try:
-        tpe = ts.tz_convert('Asia/Taipei')
-        hour = int(tpe.strftime('%H'))
-        if 18 <= hour <= 23:
-            period = '晚上'
-        elif 12 <= hour <= 17:
-            period = '下午'
-        else:
-            period = '上午'
-        return f"{period} {tpe.strftime('%H:%M')}"
-    except Exception:
-        return ""
-    try:
-        ts = pd.to_datetime(created_at, utc=True)
-    except Exception:
-        try:
-            ts = pd.to_datetime(created_at)
-            if ts.tzinfo is None:
-                ts = ts.tz_localize('UTC')
-        except Exception:
-            return ""
-    try:
-        return ts.tz_convert('Asia/Taipei').strftime('%H:%M')
-    except Exception:
-        return ""
+
+# ------------ HTML（五行 Set；Note 另起一行；不更動雲端欄位） ------------
 
 def df_to_html_compact5(df: pd.DataFrame) -> str:
     if df is None or df.empty:
@@ -426,7 +342,7 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
         total_s = _fmt_num(row.get("total_volume_kg", ""))
         created_s = row.get("created_at", "") or ""
         time_tpe = to_tpe_time_str(created_s)
-        # 五行：set1..set5，每行兩格（kg / r）
+        # 五行：set1..set5
         lines = []
         for i in range(1, NUM_SETS+1):
             kg = _fmt_num(row.get(f"set{i}_kg", ""))
@@ -435,21 +351,24 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
             rp_txt = (rp + "r") if rp else ""
             lines.append(f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>")
         lines_html = "".join(lines)
-        note_row = f"<tr class='note-row'><td class='note-cell' colspan='3'><b>Note：</b>{html.escape(str(note_s))}<span class='time'>（{html.escape(time_tpe)}）</span></td></tr>"
-        card = f"""
-        <div class='rec-card'>
-          <div class='rec-header'>
-            <div class='left nowrap'>{html.escape(str(date_s))} · {html.escape(str(item_s))}</div>
-            <div class='right nowrap'>{('Σ ' + html.escape(total_s) + ' kg') if total_s else ''}</div>
-          </div>
-          <table class='rec-sets'>
-            <tbody>
-              {lines_html}
-              {note_row}
-            </tbody>
-          </table>
-        </div>
-        """
+        note_row = (
+            f"<tr class='note-row'><td class='note-cell' colspan='3'>"
+            f"<b>Note：</b>{html.escape(str(note_s))}"
+            f"<span class='time'>（{html.escape(time_tpe)}）</span>"
+            f"</td></tr>"
+        )
+        card = (
+            "<div class='rec-card'>"
+            "<div class='rec-header'>"
+            f"<div class='left nowrap'>{html.escape(str(date_s))} · {html.escape(str(item_s))}</div>"
+            f"<div class='right nowrap'>{('Σ ' + html.escape(total_s) + ' kg') if total_s else ''}</div>"
+            "</div>"
+            "<table class='rec-sets'><tbody>"
+            f"{lines_html}{note_row}"
+            "</tbody></table>"
+            f"<div class='meta'>{html.escape(str(created_s))}</div>"
+            "</div>"
+        )
         cards.append(card)
     return "<div class='records-cards'>" + "".join(cards) + "</div>"
 
@@ -502,7 +421,7 @@ def save_button_clicked(date_str: str, item_name: str,
     # 找最近同日+同 item
     idx_recent = None
     recent_row = None
-    if not df.empty:
+    if df is not None and not df.empty:
         try:
             df_tmp = df.copy()
             df_tmp["created_at_dt"] = pd.to_datetime(df_tmp.get("created_at"), errors="coerce")
@@ -648,10 +567,9 @@ def make_coach_context(days: int = 60, max_items: int = 8, max_recent: int = 10)
         total_txt = _fmt_num(r.get("total_volume_kg"))
         lines.append(f"- {r.get('date','')} {r.get('item','')}: {sets_txt}；備註：{note_txt}；total={total_txt}kg")
     return "
-".join(lines):
-    return df_to_html_compact5(search_records(date_from, date_to, item_filter))
+".join(lines)
 
-# ------------ 教練機器人（串流） ------------
+# ------------ 教練機器人（串流，支援上下文） ------------
 
 def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
     msg = (user_msg or "").strip()
@@ -728,7 +646,94 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
         ui_history = ui_history + [{"role": "user", "content": msg}, {"role": "assistant", "content": f"抱歉，Groq 呼叫失敗：{e}"}]
         yield ui_history, ""
 
-with gr.TabItem("你的教練"):
+# ------------ CSS：行動版五行卡片、粗線分隔、避免換行 ------------
+CSS = """
+.records-cards { display: grid; gap: 10px; }
+.rec-card { border-bottom: 4px solid rgba(255,255,255,0.35); padding: 8px 6px; }
+.rec-header { display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.rec-header .left { font-weight: 600; }
+.rec-header .right { opacity: .8; font-size: .95em; }
+.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-sets { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.rec-sets td { border: 1px solid rgba(255,255,255,0.15); padding: 4px; vertical-align: top; }
+.rec-sets td.sidx { width: 26px; text-align: center; opacity: .8; }
+.rec-sets td.kg, .rec-sets td.r { width: 56px; }
+.note-row td { background: rgba(255,255,255,0.04); }
+.rec-sets td.note-cell { padding: 8px 6px; }
+.rec-sets td.note-cell .time { margin-left: .5em; opacity:.65; font-size:.9em; }
+.meta { margin-top: 4px; opacity: .6; font-size: .9em; }
+@media (max-width: 480px) {
+  .rec-sets td.kg, .rec-sets td.r { width: 48px; }
+}
+"""
+
+# ------------ 介面 ------------
+
+def _today_iso():
+    return date.today().isoformat()
+
+with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
+    gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
+快速記錄重量訓練與查詢歷史。""")
+
+    # 雲端狀態提示（可動態更新）
+    cloud_md = gr.Markdown(cloud_status_line())
+
+    with gr.Tabs():
+        # ---- Log ----
+        with gr.TabItem("Log"):
+            date_in = gr.Textbox(value="", label="Date (YYYY-MM-DD)")
+
+            item_choices = get_all_item_choices()
+            gr.Markdown("### Item")
+            item_dd = gr.Dropdown(choices=item_choices, allow_custom_value=True, value=None, label="Item 名稱")
+
+            with gr.Row():
+                set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
+                set1rp = gr.Number(label="Set 1 — reps", precision=0, value=None, placeholder="r")
+            with gr.Row():
+                set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg")
+                set2rp = gr.Number(label="Set 2 — reps", precision=0, value=None, placeholder="r")
+            with gr.Row():
+                set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg")
+                set3rp = gr.Number(label="Set 3 — reps", precision=0, value=None, placeholder="r")
+            with gr.Row():
+                set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg")
+                set4rp = gr.Number(label="Set 4 — reps", precision=0, value=None, placeholder="r")
+            with gr.Row():
+                set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg")
+                set5rp = gr.Number(label="Set 5 — reps", precision=0, value=None, placeholder="r")
+
+            note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
+
+            save_btn = gr.Button("💾 Save", variant="primary")
+            status_md = gr.Markdown("")
+            current_df = load_records_df()
+            latest_html = gr.HTML(value=df_to_html_compact5(current_df.tail(20)) if (current_df is not None and not current_df.empty) else "", label="最近 20 筆紀錄")
+
+            save_btn.click(
+                fn=save_button_clicked,
+                inputs=[date_in, item_dd,
+                        set1kg, set1rp, set2kg, set2rp, set3kg, set3rp, set4kg, set4rp, set5kg, set5rp,
+                        note_in],
+                outputs=[status_md, item_dd, latest_html, save_btn, cloud_md],
+            )
+
+            # 每次頁面載入時自動填入今天日期
+            demo.load(fn=_today_iso, inputs=None, outputs=date_in)
+
+        # ---- Records ----
+        with gr.TabItem("Records"):
+            with gr.Row():
+                q_from = gr.Textbox(label="From (YYYY-MM-DD)")
+                q_to = gr.Textbox(label="To (YYYY-MM-DD)")
+                q_item = gr.Textbox(label="Item 包含（關鍵字）")
+            query_btn = gr.Button("🔎 Search")
+            out_html = gr.HTML(value=df_to_html_compact5(load_records_df()), label="搜尋結果")
+            query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
+
+        # ---- 你的教練 ----
+        with gr.TabItem("你的教練"):
             chatbot = gr.Chatbot(height=420, type='messages')
             user_in = gr.Textbox(placeholder="輸入你的問題，按 Enter 或點送出…", label="訊息")
             with gr.Row():
@@ -740,7 +745,6 @@ with gr.TabItem("你的教練"):
             send_btn.click(coach_chat_stream_ctx, inputs=[chatbot, user_in, use_ctx, ctx_days], outputs=[chatbot, user_in])
             user_in.submit(coach_chat_stream_ctx, inputs=[chatbot, user_in, use_ctx, ctx_days], outputs=[chatbot, user_in])
             clear_btn.click(lambda: ([], ""), None, [chatbot, user_in], queue=False)
-lambda: ([], ""), None, [chatbot, user_in], queue=False)
 
     gr.Markdown("""---
 **Tips**
