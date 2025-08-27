@@ -458,11 +458,14 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
 def save_button_clicked(date_str: str, item_name: str,
                         set1kg, set1reps, set2kg, set2reps, set3kg, set3reps, set4kg, set4reps, set5kg, set5reps,
                         note: str):
-    # 解析日期
-    try:
-        dt = pd.to_datetime(date_str).date()
-    except Exception:
-        return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), "", gr.update(), cloud_status_line()
+    # 解析日期（若空白，預設今天）
+    if not date_str or not str(date_str).strip():
+        dt = date.today()
+    else:
+        try:
+            dt = pd.to_datetime(date_str).date()
+        except Exception:
+            return "日期格式錯誤，請用 YYYY-MM-DD", gr.update(), "", gr.update(), cloud_status_line()
 
     item_name = (item_name or "").strip()
     if not item_name:
@@ -520,7 +523,7 @@ def save_button_clicked(date_str: str, item_name: str,
     if recent_row is not None:
         try:
             t_recent = pd.to_datetime(recent_row.get("created_at"), errors="coerce")
-            if pd.notna(t_recent) and (now - t_recent.to_pydatetime()) <= timedelta(minutes=WINDOW_MINUTES):
+            if pd.notna(t_recent) and (datetime.utcnow() - t_recent.to_pydatetime()) <= timedelta(minutes=WINDOW_MINUTES):
                 df = df.drop(index=idx_recent)
                 replaced = True
         except Exception:
@@ -646,6 +649,10 @@ CSS = """
 """
 
 # ------------ 介面 ------------
+# 每次使用者開啟介面時，將日期自動帶入今天
+def _today_iso():
+    return date.today().isoformat()
+
 with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
     gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
 快速記錄重量訓練與查詢歷史。""")
@@ -656,8 +663,7 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
     with gr.Tabs():
         # ---- Log ----
         with gr.TabItem("Log"):
-            today_str = date.today().isoformat()
-            date_in = gr.Textbox(value=today_str, label="Date (YYYY-MM-DD)")
+            date_in = gr.Textbox(value="", label="Date (YYYY-MM-DD)")
 
             item_choices = get_all_item_choices()
             gr.Markdown("### Item")
@@ -693,6 +699,9 @@ with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
                         note_in],
                 outputs=[status_md, item_dd, latest_html, save_btn, cloud_md],
             )
+
+            # 每次頁面載入（每位使用者各自的 session）時自動填入今天日期
+            demo.load(fn=_today_iso, inputs=None, outputs=date_in)
 
         # ---- Records ----
         with gr.TabItem("Records"):
