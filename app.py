@@ -328,8 +328,59 @@ def to_tpe_time_str(created_at: str) -> str:
 # ------------ HTML（五行 Set；Note 另起一行；不更動雲端欄位） ------------
 
 def df_to_html_compact5(df: pd.DataFrame) -> str:
+    """將紀錄以五行 set + Note 獨立一行顯示為 HTML。小螢幕不換行。"""
     if df is None or df.empty:
         return "<div class='records-empty'>目前沒有紀錄</div>"
+    # 確保 note 在最後
+    if "note" in df.columns:
+        cols = [c for c in df.columns if c != "note"] + ["note"]
+        df = df[cols]
+
+    cards: list[str] = []
+    for _, row in df.iterrows():
+        date_s = (row.get("date") or "")
+        item_s = (row.get("item") or "")
+        note_s = (row.get("note") or "")
+        total_s = _fmt_num(row.get("total_volume_kg"))
+        created_s = (row.get("created_at") or "")
+        time_tpe = to_tpe_time_str(created_s)
+
+        # 五行：set1..set5
+        set_rows: list[str] = []
+        for i in range(1, NUM_SETS + 1):
+            kg = _fmt_num(row.get(f"set{i}_kg"))
+            rp = _fmt_num(row.get(f"set{i}_reps"))
+            kg_txt = (kg + "kg") if kg else ""
+            rp_txt = (rp + "r") if rp else ""
+            set_rows.append(
+                f"<tr><td class='sidx'>{i}</td><td class='kg nowrap'>{kg_txt}</td><td class='r nowrap'>{rp_txt}</td></tr>"
+            )
+        lines_html = "".join(set_rows)
+        note_html = (
+            f"<tr class='note-row'><td class='note-cell' colspan='3'>"
+            f"<b>Note：</b>{html.escape(str(note_s))}"
+            f"<span class='time'>（{html.escape(time_tpe)}）</span>"
+            f"</td></tr>"
+        )
+
+        header_left = html.escape(str(date_s)) + " · " + html.escape(str(item_s))
+        header_right = ("Σ " + html.escape(str(total_s)) + " kg") if total_s else ""
+
+        card = (
+            "<div class='rec-card'>"
+            "<div class='rec-header'>"
+            f"<div class='left nowrap'>{header_left}</div>"
+            f"<div class='right nowrap'>{header_right}</div>"
+            "</div>"
+            "<table class='rec-sets'><tbody>"
+            f"{lines_html}{note_html}"
+            "</tbody></table>"
+            "</div>"
+        )
+        cards.append(card)
+
+    outer = "<div class='records-cards'>" + "".join(cards) + "</div>"
+    return outer
     # 確保 note 在最後
     if "note" in df.columns:
         cols = [c for c in df.columns if c != "note"] + ["note"]
