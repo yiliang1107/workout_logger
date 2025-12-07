@@ -31,7 +31,7 @@ except ImportError:
 
 # ---------------- 常數 ----------------
 APP_TITLE = "Workout Logger"
-APP_VERSION = "v1.2 (TPE)"  # 新增：版本號與時區註記
+APP_VERSION = "v1.2"  # Update: 移除時區註記，恢復簡潔
 RECORDS_CSV = Path("workout_records.csv")
 ITEMS_JSON = Path("known_items.json")
 NUM_SETS = 5
@@ -273,18 +273,21 @@ def to_tpe_time_str(created_at: str) -> str:
     if not created_at:
         return ""
     try:
-        ts = pd.to_datetime(created_at, utc=True)
+        # Update: 嘗試解析為 Naive Time 並視為 TPE，或處理舊有 Aware Time
+        ts = pd.to_datetime(created_at)
+        if ts.tzinfo is None:
+             # 若無時區資訊，預設為台北時間 (TPE is UTC+8)
+            ts = ts.tz_localize(timezone(timedelta(hours=8)))
+        else:
+            # 若有時區資訊，轉換至 TPE
+            ts = ts.tz_convert(timezone(timedelta(hours=8)))
     except Exception:
-        try:
-            ts = pd.to_datetime(created_at)
-            if ts.tzinfo is None:
-                ts = ts.tz_localize("UTC")
-        except Exception:
-            return ""
+        return ""
+    
     try:
-        tpe = ts.tz_convert("Asia/Taipei")
-        h24 = int(tpe.strftime("%H"))
-        m = tpe.strftime("%M")
+        # 因為已經是 TPE aware
+        h24 = int(ts.strftime("%H"))
+        m = ts.strftime("%M")
         period = "上午"
         if 12 <= h24 <= 17:
             period = "下午"
@@ -376,15 +379,17 @@ def save_button_clicked(date_str: str, item_name: str,
 
     total_volume = compute_total_volume(kg_vals, reps_vals)
     
-    # Update: 建立時間改用台北時間
+    # Update: 建立時間改用台北時間，但儲存時不帶時區資訊 (Naive) 以符合需求
     now_tpe = get_now_tpe()
+    created_at_str = now_tpe.strftime('%Y-%m-%dT%H:%M:%S')  # ISO format without offset
+
     new_row = {
         "date": dt.isoformat(),
         "item": item_name,
         **sets_kv,
         "note": note or "",
         "total_volume_kg": total_volume,
-        "created_at": now_tpe.isoformat(),
+        "created_at": created_at_str,
     }
 
     new_hash = hash_entry(new_row)
@@ -396,8 +401,17 @@ def save_button_clicked(date_str: str, item_name: str,
     if df is not None and not df.empty:
         try:
             tmp = df.copy()
-            # 處理時區轉換以避免比較錯誤 (統一轉為 UTC+8 或 aware time)
-            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce", utc=True)
+            # 讀取時，確保 tmp["created_at_dt"] 為 TPE aware
+            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce")
+            
+            mask_naive = tmp["created_at_dt"].apply(lambda x: x.tzinfo is None if pd.notnull(x) else False)
+            if mask_naive.any():
+                tmp.loc[mask_naive, "created_at_dt"] = tmp.loc[mask_naive, "created_at_dt"].dt.tz_localize(timezone(timedelta(hours=8)))
+            
+            mask_aware = ~mask_naive
+            if mask_aware.any():
+                tmp.loc[mask_aware, "created_at_dt"] = tmp.loc[mask_aware, "created_at_dt"].dt.tz_convert(timezone(timedelta(hours=8)))
+
             same = (tmp["date"].astype(str) == new_row["date"]) & (tmp["item"].astype(str) == new_row["item"])
             same_df = tmp[same].sort_values("created_at_dt", ascending=False)
             if not same_df.empty:
@@ -417,15 +431,21 @@ def save_button_clicked(date_str: str, item_name: str,
     if df is not None and not df.empty:
         try:
             tmp = df.copy()
-            # 確保舊資料時間欄位為 aware datetime
-            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce", utc=True)
+            # 確保舊資料時間欄位為 TPE aware (統一基準)
+            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce")
             
-            # 篩選條件：同日期 & 同項目 & 建立時間在目前時間的 10 分鐘內
-            # now_tpe 是 TPE aware, created_at_dt 是 UTC aware, 兩者可直接相減
+            mask_naive = tmp["created_at_dt"].apply(lambda x: x.tzinfo is None if pd.notnull(x) else False)
+            if mask_naive.any():
+                tmp.loc[mask_naive, "created_at_dt"] = tmp.loc[mask_naive, "created_at_dt"].dt.tz_localize(timezone(timedelta(hours=8)))
+            
+            mask_aware = ~mask_naive
+            if mask_aware.any():
+                tmp.loc[mask_aware, "created_at_dt"] = tmp.loc[mask_aware, "created_at_dt"].dt.tz_convert(timezone(timedelta(hours=8)))
+            
+            # now_tpe 已經是 TPE aware
             mask_target = (tmp["date"].astype(str) == new_row["date"]) & (tmp["item"].astype(str) == new_row["item"])
             mask_window = (now_tpe - tmp["created_at_dt"]) <= timedelta(minutes=WINDOW_MINUTES)
             
-            # 找出所有符合的舊紀錄索引並刪除
             indices_to_drop = tmp[mask_target & mask_window].index
             
             if not indices_to_drop.empty:
@@ -651,7 +671,8 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 
     with gr.Tabs():
         with gr.TabItem("Log"):
-            date_in = gr.Textbox(value="", label="Date (YYYY-MM-DD)")
+            # Update: 這裡加上時區註記
+            date_in = gr.Textbox(value="", label="Date (YYYY-MM-DD) [TPE UTC+8]")
 
             item_dd = gr.Dropdown(choices=get_all_item_choices(), allow_custom_value=True, value=None, label="Item 名稱")
 
