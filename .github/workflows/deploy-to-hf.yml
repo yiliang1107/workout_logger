@@ -21,8 +21,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # 加入 Hugging Face 當 remote
           git remote add hf https://yiliang1107:${HF_TOKEN}@huggingface.co/spaces/yiliang1107/workout.git
-
-          # 推 main 分支上去
-          git push hf main
+          # 先抓一下 remote（失敗也沒關係）
+          git fetch hf main || true
+          # 以 GitHub 為主，強制覆蓋 Hugging Face 的 main
+          git push --force hf main
