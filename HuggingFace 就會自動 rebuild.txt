@@ -1,0 +1,4 @@
+git add .
+git commit -m "改善教練摘要"
+git push github main
+git push origin main      ← 把最新程式推回 Hugging Face
