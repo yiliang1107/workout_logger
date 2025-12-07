@@ -14,6 +14,9 @@ from datetime import datetime, date, timedelta, timezone
 import gradio as gr
 import pandas as pd
 
+#test github action
+print("Hello from GitHub deploy")
+
 # Groq
 try:
     from groq import Groq
