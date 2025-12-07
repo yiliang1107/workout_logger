@@ -2,7 +2,8 @@ name: Deploy to Hugging Face Space
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   deploy:
@@ -14,15 +15,15 @@ jobs:
 
       - name: Set up git user
         run: |
-          git config user.name "yiliang1107"
-          git config user.email "yiliang1107@gmail.com"
+          git config --global user.name "yiliang1107"
+          git config --global user.email "yiliang1107@gmail.com"
 
-      - name: Push to Hugging Face Space
+      - name: Push to Hugging Face Space (force)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # 加入帶 token 的 remote，名稱叫 hf
           git remote add hf https://yiliang1107:${HF_TOKEN}@huggingface.co/spaces/yiliang1107/workout.git
-          # 先抓一下 remote（失敗也沒關係）
-          git fetch hf main || true
-          # 以 GitHub 為主，強制覆蓋 Hugging Face 的 main
-          git push --force hf main
+
+          # 把 main 強制推上去，覆蓋 Hugging Face 上的 main
+          git push hf main --force
