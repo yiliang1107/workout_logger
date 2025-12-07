@@ -10,14 +10,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) 把 GitHub 這個 repo 完整地 checkout 下來（fetch-depth: 0 -> 不是 shallow clone）
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # <<< 這行是重點：抓完整 history
+          lfs: false         # 我們沒用 LFS，就順便關掉
 
+      # 2) 設定 git user（推到 Hugging Face 時會用到）
       - name: Set up git user
         run: |
-          git config --global user.name "yiliang1107"
-          git config --global user.email "yiliang1107@gmail.com"
+          git config user.name "yiliang1107"
+          git config user.email "yiliang1107@gmail.com"
 
+      # 3) 把 main 強制推到 Hugging Face Space
       - name: Push to Hugging Face Space (force)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -25,5 +31,8 @@ jobs:
           # 加入帶 token 的 remote，名稱叫 hf
           git remote add hf https://yiliang1107:${HF_TOKEN}@huggingface.co/spaces/yiliang1107/workout.git
 
-          # 把 main 強制推上去，覆蓋 Hugging Face 上的 main
+          # 先抓一下 hf/main（如果存在），避免衝突訊息
+          git fetch hf main || true
+
+          # 把 GitHub 的 main 強制推上去覆蓋 Space 的 main
           git push hf main --force
