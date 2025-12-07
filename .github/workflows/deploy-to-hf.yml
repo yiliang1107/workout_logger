@@ -1,0 +1,28 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up git user
+        run: |
+          git config user.name "yiliang1107"
+          git config user.email "yiliang1107@gmail.com"
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # 加入 Hugging Face 當 remote
+          git remote add hf https://yiliang1107:${HF_TOKEN}@huggingface.co/spaces/yiliang1107/workout.git
+
+          # 推 main 分支上去
+          git push hf main
