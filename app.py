@@ -14,8 +14,6 @@ from datetime import datetime, date, timedelta, timezone
 import gradio as gr
 import pandas as pd
 
-#test github action
-print("Hello from GitHub deploy")
 
 # Groq
 try:
@@ -33,6 +31,7 @@ except ImportError:
 
 # ---------------- 常數 ----------------
 APP_TITLE = "Workout Logger"
+APP_VERSION = "v1.2 (TPE)"  # 新增：版本號與時區註記
 RECORDS_CSV = Path("workout_records.csv")
 ITEMS_JSON = Path("known_items.json")
 NUM_SETS = 5
@@ -206,6 +205,10 @@ def load_known_items() -> List[str]:
             return []
     return []
 
+# 新增：取得台北時間 (UTC+8) 的 Helper
+def get_now_tpe() -> datetime:
+    return datetime.now(timezone(timedelta(hours=8)))
+
 def save_known_items(items: List[str]):
     uniq: List[str] = []
     for it in items:
@@ -347,9 +350,9 @@ def df_to_html_compact5(df: pd.DataFrame) -> str:
 def save_button_clicked(date_str: str, item_name: str,
                         set1kg, set1reps, set2kg, set2reps, set3kg, set3reps, set4kg, set4reps, set5kg, set5reps,
                         note: str):
-    # 日期（空白→今天）
+    # 日期（空白→今天，改用台北時間）
     if not date_str or not str(date_str).strip():
-        dt = date.today()
+        dt = get_now_tpe().date()
     else:
         try:
             dt = pd.to_datetime(date_str).date()
@@ -372,14 +375,16 @@ def save_button_clicked(date_str: str, item_name: str,
         sets_kv[f"set{idx}_reps"] = rp
 
     total_volume = compute_total_volume(kg_vals, reps_vals)
-    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    
+    # Update: 建立時間改用台北時間
+    now_tpe = get_now_tpe()
     new_row = {
         "date": dt.isoformat(),
         "item": item_name,
         **sets_kv,
         "note": note or "",
         "total_volume_kg": total_volume,
-        "created_at": now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        "created_at": now_tpe.isoformat(),
     }
 
     new_hash = hash_entry(new_row)
@@ -391,7 +396,8 @@ def save_button_clicked(date_str: str, item_name: str,
     if df is not None and not df.empty:
         try:
             tmp = df.copy()
-            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce")
+            # 處理時區轉換以避免比較錯誤 (統一轉為 UTC+8 或 aware time)
+            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce", utc=True)
             same = (tmp["date"].astype(str) == new_row["date"]) & (tmp["item"].astype(str) == new_row["item"])
             same_df = tmp[same].sort_values("created_at_dt", ascending=False)
             if not same_df.empty:
@@ -406,12 +412,24 @@ def save_button_clicked(date_str: str, item_name: str,
         latest_html = df_to_html_compact5(latest.tail(20)) if latest is not None and not latest.empty else ""
         return ("內容未變更：未儲存。", gr.update(choices=merged), latest_html, gr.update(interactive=False), cloud_status_line())
 
+    # Update: 10 分鐘內重複儲存邏輯 -> 移除「所有」符合條件的舊紀錄（覆寫）
     replaced = False
-    if recent_row is not None:
+    if df is not None and not df.empty:
         try:
-            t_recent = pd.to_datetime(recent_row.get("created_at"), errors="coerce")
-            if pd.notna(t_recent) and (datetime.utcnow() - t_recent.to_pydatetime()) <= timedelta(minutes=WINDOW_MINUTES):
-                df = df.drop(index=idx_recent)
+            tmp = df.copy()
+            # 確保舊資料時間欄位為 aware datetime
+            tmp["created_at_dt"] = pd.to_datetime(tmp.get("created_at"), errors="coerce", utc=True)
+            
+            # 篩選條件：同日期 & 同項目 & 建立時間在目前時間的 10 分鐘內
+            # now_tpe 是 TPE aware, created_at_dt 是 UTC aware, 兩者可直接相減
+            mask_target = (tmp["date"].astype(str) == new_row["date"]) & (tmp["item"].astype(str) == new_row["item"])
+            mask_window = (now_tpe - tmp["created_at_dt"]) <= timedelta(minutes=WINDOW_MINUTES)
+            
+            # 找出所有符合的舊紀錄索引並刪除
+            indices_to_drop = tmp[mask_target & mask_window].index
+            
+            if not indices_to_drop.empty:
+                df = df.drop(index=indices_to_drop)
                 replaced = True
         except Exception:
             pass
@@ -622,11 +640,12 @@ CSS = """
 
 # ---------------- 介面 ----------------
 def _today_iso() -> str:
-    return date.today().isoformat()
+    # Update: 預設日期改為台北時間
+    return get_now_tpe().date().isoformat()
 
-with gr.Blocks(title=APP_TITLE, theme=gr.themes.Soft(), css=CSS) as demo:
-    gr.Markdown("""# 🏋️‍♂️ Workout Logger + 🤖 你的教練
-快速記錄重量訓練與查詢歷史。""")
+with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=CSS) as demo:
+    gr.Markdown(f"""# 🏋️‍♂️ Workout Logger {APP_VERSION} + 🤖 你的教練
+    快速記錄重量訓練與查詢歷史。""")
 
     cloud_md = gr.Markdown(cloud_status_line())
 
