@@ -938,9 +938,6 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 - 空白的數值欄會保持空白（不顯示 0）。
 - Total Volume = ∑(kg × r)。
 """)
-    
-    # 移除最後這行，因為已經在上面每個按鈕個別綁定了
-    # demo.load(None, None, None, js=REST_TIMER_JS)
 
 if __name__ == "__main__":
     if not RECORDS_CSV.exists():
