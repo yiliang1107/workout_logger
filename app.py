@@ -5,7 +5,7 @@ Gradio Workout Logger + 你的教練（Groq）— app.py（穩定版）
 - 保留功能：雲端同步、10 分鐘覆寫、Item 下拉記憶、行動版五行顯示、Note 另行＋台北時區時間（12h、不補 0）、教練串流可讀取最近紀錄
 """
 from __future__ import annotations
-import os, json, hashlib, html, math
+import os, json, hashlib, html, math, difflib
 from pathlib import Path
 from typing import List, Optional, Tuple
 from datetime import datetime, date, timedelta, timezone
@@ -237,6 +237,34 @@ def get_all_item_choices() -> List[str]:
             seen.append(it)
     return seen
 
+# ---------------- 校正工具 ----------------
+def is_contains_chinese(s: str) -> bool:
+    """判斷字串是否包含中文字元"""
+    for ch in s:
+        if '\u4e00' <= ch <= '\u9fff':
+            return True
+    return False
+
+def find_closest_item(user_input: str, candidates: List[str]) -> Optional[str]:
+    """
+    智慧模糊比對：自動區分中英文
+    - 英文：使用較嚴格的門檻 (0.7)，避免 'Lat' 對到 'Flat'
+    - 中文：使用較寬鬆的門檻 (0.5)，因為中文詞彙通常較短
+    """
+    if not user_input or not candidates:
+        return None
+    
+    # 判斷是否包含中文
+    is_zh = is_contains_chinese(user_input)
+    
+    # 設定門檻：中文容錯率高一點(因為字少)，英文嚴格一點
+    cutoff = 0.5 if is_zh else 0.7
+    
+    # 使用 difflib 找出最接近的
+    matches = difflib.get_close_matches(user_input, candidates, n=1, cutoff=cutoff)
+    
+    return matches[0] if matches else None
+
 def _fmt_num(n):
     if n in (None, "", "nan", "NaN", "NAN"):
         return ""
@@ -366,6 +394,24 @@ def save_button_clicked(date_str: str, item_name: str,
     if not item_name:
         return "沒有可存的資料：請至少填一個 Item 名稱", gr.update(), "", gr.update(), cloud_status_line()
 
+    # --- 新增：中英文自動校正邏輯 ---
+    all_known = get_all_item_choices()
+    auto_corrected_msg = ""
+    
+    # 如果完全匹配已存在的項目，就不需要校正
+    if item_name not in all_known:
+        closest = find_closest_item(item_name, all_known)
+        if closest:
+            original_input = item_name
+            item_name = closest # 自動替換為標準名稱
+            
+            # 根據語言顯示不同的提示訊息
+            if is_contains_chinese(original_input):
+                auto_corrected_msg = f"已修正：'{original_input}' → '{closest}'"
+            else:
+                auto_corrected_msg = f"Auto-corrected: '{original_input}' -> '{closest}'"
+    # -----------------------------------
+
     to_f = lambda x: None if x in ("", None) else float(x)
     to_i = lambda x: None if x in ("", None) else int(x)
 
@@ -462,12 +508,20 @@ def save_button_clicked(date_str: str, item_name: str,
 
     ok_cloud, total_rows = save_records_df(df)
 
-    msg = ("已覆寫最近 10 分鐘內的舊紀錄。" if replaced else "已儲存 1 筆。") + f"（日期：{dt.isoformat()}）"
+    # 修改回傳訊息
+    base_msg = ("已覆寫最近 10 分鐘內的舊紀錄。" if replaced else "已儲存 1 筆。") + f"（日期：{dt.isoformat()}）"
+    
+    # 如果有校正，把提示加在最前面
+    if auto_corrected_msg:
+        final_msg = f"【{auto_corrected_msg}】 {base_msg}"
+    else:
+        final_msg = base_msg
+        
     if ok_cloud:
-        msg += f"｜雲端同步✅｜分頁：{CLOUD_WS_TITLE or SHEET_TITLE_ENV}｜總列數：{total_rows}"
+        final_msg += f"｜雲端同步✅｜分頁：{CLOUD_WS_TITLE or SHEET_TITLE_ENV}｜總列數：{total_rows}"
     else:
         extra = f"（{CLOUD_LAST_ERROR}）" if CLOUD_LAST_ERROR else ""
-        msg += f"｜雲端同步❌ {extra}"
+        final_msg += f"｜雲端同步❌ {extra}"
 
     known = load_known_items()
     if item_name not in known:
@@ -477,7 +531,7 @@ def save_button_clicked(date_str: str, item_name: str,
     merged = get_all_item_choices()
     latest = load_records_df()
     latest_html = df_to_html_compact5(latest.tail(20).iloc[::-1]) if latest is not None and not latest.empty else ""
-    return (msg, gr.update(choices=merged), latest_html, gr.update(interactive=True), cloud_status_line())
+    return (final_msg, gr.update(choices=merged), latest_html, gr.update(interactive=True), cloud_status_line())
 
 # ---------------- 搜尋 ----------------
 def search_records(date_from: str, date_to: str, item_filter: str) -> pd.DataFrame:
