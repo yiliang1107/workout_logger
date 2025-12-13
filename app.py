@@ -639,9 +639,12 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
         yield ui_hist, ""
 
 # ---------------- JavaScript (Rest Timer) ----------------
-# 移除原本的 get_rest_timer_js，改用全域載入的 JS
+# 全域 JS：負責綁定按鈕事件、計時邏輯、音效播放
 REST_TIMER_JS = """
 async () => {
+    // 稍等 DOM 載入
+    await new Promise(r => setTimeout(r, 500));
+    
     const ids = ['rest_btn_1', 'rest_btn_2', 'rest_btn_3', 'rest_btn_4', 'rest_btn_5'];
     
     const playSound = () => {
@@ -709,7 +712,7 @@ async () => {
             clearTimeout(pressTimer);
         };
         
-        // 綁定長按偵測
+        // 綁定長按偵測 (支援電腦與手機)
         btn.addEventListener('mousedown', startPress);
         btn.addEventListener('touchstart', startPress);
         btn.addEventListener('mouseup', endPress);
@@ -718,6 +721,8 @@ async () => {
         // 點擊邏輯 (開始/暫停/繼續)
         btn.addEventListener('click', (e) => {
             if (isLongPress) return; // 如果是長按觸發的，忽略點擊事件
+            e.stopPropagation(); // 防止冒泡
+            e.preventDefault();
             
             if (btn.dataset.status === "idle") {
                 // 開始
@@ -736,6 +741,7 @@ async () => {
                         playSound();
                         btn.innerText = "Time's up";
                         btn.dataset.status = "finished";
+                        // 3秒後自動重置
                         setTimeout(() => {
                             if (btn.dataset.status === "finished") resetTimer();
                         }, 3000);
@@ -746,7 +752,7 @@ async () => {
                 // 暫停
                 btn.dataset.status = "paused";
                 clearInterval(Number(btn.dataset.timerId));
-                btn.innerText = "Paused (" + btn.dataset.timeLeft + "s)";
+                btn.innerText = "⏸ " + btn.dataset.timeLeft + "s";
                 
             } else if (btn.dataset.status === "paused") {
                 // 繼續
@@ -927,9 +933,6 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 
             query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
 
-            # 載入 JavaScript (在 Records 分頁之後或 Blocks 最後面)
-            demo.load(None, None, None, js=REST_TIMER_JS)
-
         with gr.TabItem("你的教練"):
             chatbot = gr.Chatbot(height=420, type='messages')
             user_in = gr.Textbox(placeholder="輸入你的問題，按 Enter 或點送出…", label="訊息")
@@ -949,6 +952,9 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 - 空白的數值欄會保持空白（不顯示 0）。
 - Total Volume = ∑(kg × r)。
 """)
+    
+    # 載入 JavaScript (在所有元件定義之後)
+    demo.load(None, None, None, js=REST_TIMER_JS)
 
 if __name__ == "__main__":
     if not RECORDS_CSV.exists():
