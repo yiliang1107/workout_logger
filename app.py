@@ -639,14 +639,19 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
         yield ui_hist, ""
 
 # ---------------- JavaScript (Rest Timer) ----------------
-# 全域 JS：負責綁定按鈕事件、計時邏輯、音效播放
+# 單一按鈕初始化邏輯：會被每個按鈕個別呼叫
 REST_TIMER_JS = """
-async () => {
-    // 稍等 DOM 載入
-    await new Promise(r => setTimeout(r, 500));
+(btn) => {
+    // 如果已經綁定過，直接返回 (但通常 Gradio 重新渲染會生成新 DOM)
+    if (btn.dataset.setupDone) return;
+    btn.dataset.setupDone = "1";
     
-    const ids = ['rest_btn_1', 'rest_btn_2', 'rest_btn_3', 'rest_btn_4', 'rest_btn_5'];
+    // 初始化狀態
+    btn.dataset.status = "idle"; // idle, running, paused
+    btn.dataset.timeLeft = "120";
+    btn.innerText = "Rest";
     
+    // 音效函式
     const playSound = () => {
         try {
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -677,117 +682,94 @@ async () => {
         } catch(e) { console.error(e); }
     };
 
-    const setupBtn = (id) => {
-        const container = document.getElementById(id); 
-        if (!container) return;
-        const btn = container.querySelector('button');
-        if (!btn || btn.dataset.setupDone) return;
-        
-        btn.dataset.setupDone = "1";
-        btn.dataset.status = "idle"; // idle, running, paused
+    let pressTimer;
+    let isLongPress = false;
+    
+    const resetTimer = () => {
+        if (btn.dataset.timerId) clearInterval(Number(btn.dataset.timerId));
+        btn.dataset.status = "idle";
         btn.dataset.timeLeft = "120";
-        btn.originalText = "Rest";
-        
-        let pressTimer;
-        let isLongPress = false;
-        
-        const resetTimer = () => {
-            if (btn.dataset.timerId) clearInterval(Number(btn.dataset.timerId));
-            btn.dataset.status = "idle";
-            btn.dataset.timeLeft = "120";
-            btn.innerText = "Rest";
-            btn.classList.remove('counting');
-            isLongPress = false;
-        };
-
-        const startPress = () => {
-            isLongPress = false;
-            pressTimer = setTimeout(() => {
-                isLongPress = true;
-                resetTimer();
-            }, 800); // 長按 0.8秒 重置
-        };
-        
-        const endPress = () => {
-            clearTimeout(pressTimer);
-        };
-        
-        // 綁定長按偵測 (支援電腦與手機)
-        btn.addEventListener('mousedown', startPress);
-        btn.addEventListener('touchstart', startPress);
-        btn.addEventListener('mouseup', endPress);
-        btn.addEventListener('touchend', endPress);
-        
-        // 點擊邏輯 (開始/暫停/繼續)
-        btn.addEventListener('click', (e) => {
-            if (isLongPress) return; // 如果是長按觸發的，忽略點擊事件
-            e.stopPropagation(); // 防止冒泡
-            e.preventDefault();
-            
-            if (btn.dataset.status === "idle") {
-                // 開始
-                btn.dataset.status = "running";
-                btn.classList.add('counting');
-                btn.innerText = btn.dataset.timeLeft + "s";
-                btn.dataset.timerId = setInterval(() => {
-                    let t = Number(btn.dataset.timeLeft);
-                    t--;
-                    btn.dataset.timeLeft = t;
-                    if (t > 0) {
-                        btn.innerText = t + "s";
-                    } else {
-                        // 時間到
-                        clearInterval(Number(btn.dataset.timerId));
-                        playSound();
-                        btn.innerText = "Time's up";
-                        btn.dataset.status = "finished";
-                        // 3秒後自動重置
-                        setTimeout(() => {
-                            if (btn.dataset.status === "finished") resetTimer();
-                        }, 3000);
-                    }
-                }, 1000);
-                
-            } else if (btn.dataset.status === "running") {
-                // 暫停
-                btn.dataset.status = "paused";
-                clearInterval(Number(btn.dataset.timerId));
-                btn.innerText = "⏸ " + btn.dataset.timeLeft + "s";
-                
-            } else if (btn.dataset.status === "paused") {
-                // 繼續
-                btn.dataset.status = "running";
-                btn.innerText = btn.dataset.timeLeft + "s";
-                btn.dataset.timerId = setInterval(() => {
-                    let t = Number(btn.dataset.timeLeft);
-                    t--;
-                    btn.dataset.timeLeft = t;
-                    if (t > 0) {
-                        btn.innerText = t + "s";
-                    } else {
-                        clearInterval(Number(btn.dataset.timerId));
-                        playSound();
-                        btn.innerText = "Time's up";
-                        btn.dataset.status = "finished";
-                        setTimeout(() => {
-                            if (btn.dataset.status === "finished") resetTimer();
-                        }, 3000);
-                    }
-                }, 1000);
-            }
-        });
+        btn.innerText = "Rest";
+        btn.classList.remove('counting');
+        isLongPress = false;
     };
 
-    ids.forEach(id => {
-        // 輪詢直到元素出現
-        const interval = setInterval(() => {
-            const el = document.getElementById(id);
-            if (el) {
-                setupBtn(id);
-                clearInterval(interval);
-            }
-        }, 500);
+    const startPress = () => {
+        isLongPress = false;
+        pressTimer = setTimeout(() => {
+            isLongPress = true;
+            resetTimer();
+        }, 800); // 長按 0.8秒 重置
+    };
+    
+    const endPress = () => {
+        clearTimeout(pressTimer);
+    };
+    
+    // 綁定長按 (支援 PC/Mobile)
+    btn.addEventListener('mousedown', startPress);
+    btn.addEventListener('touchstart', startPress);
+    btn.addEventListener('mouseup', endPress);
+    btn.addEventListener('touchend', endPress);
+    
+    // 綁定點擊
+    btn.addEventListener('click', (e) => {
+        if (isLongPress) return;
+        e.stopPropagation();
+        e.preventDefault(); // 阻止 Gradio 預設行為
+        
+        if (btn.dataset.status === "idle") {
+            // Start
+            btn.dataset.status = "running";
+            btn.classList.add('counting');
+            btn.innerText = btn.dataset.timeLeft + "s";
+            btn.dataset.timerId = setInterval(() => {
+                let t = Number(btn.dataset.timeLeft);
+                t--;
+                btn.dataset.timeLeft = t;
+                if (t > 0) {
+                    btn.innerText = t + "s";
+                } else {
+                    clearInterval(Number(btn.dataset.timerId));
+                    playSound();
+                    btn.innerText = "Time's up";
+                    btn.dataset.status = "finished";
+                    setTimeout(() => {
+                        if (btn.dataset.status === "finished") resetTimer();
+                    }, 3000);
+                }
+            }, 1000);
+            
+        } else if (btn.dataset.status === "running") {
+            // Pause
+            btn.dataset.status = "paused";
+            clearInterval(Number(btn.dataset.timerId));
+            btn.innerText = "⏸ " + btn.dataset.timeLeft + "s";
+            
+        } else if (btn.dataset.status === "paused") {
+            // Resume
+            btn.dataset.status = "running";
+            btn.innerText = btn.dataset.timeLeft + "s";
+            btn.dataset.timerId = setInterval(() => {
+                let t = Number(btn.dataset.timeLeft);
+                t--;
+                btn.dataset.timeLeft = t;
+                if (t > 0) {
+                    btn.innerText = t + "s";
+                } else {
+                    clearInterval(Number(btn.dataset.timerId));
+                    playSound();
+                    btn.innerText = "Time's up";
+                    btn.dataset.status = "finished";
+                    setTimeout(() => {
+                        if (btn.dataset.status === "finished") resetTimer();
+                    }, 3000);
+                }
+            }, 1000);
+        }
     });
+    
+    return btn;
 }
 """
 
@@ -869,32 +851,36 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 
             item_dd = gr.Dropdown(choices=get_all_item_choices(), allow_custom_value=True, value=None, label="Item 名稱")
 
-            # 修改這 5 個 Row，加入對應的 elem_classes
+            # 修改這 5 個 Row，每個按鈕加上 .load(None, None, None, js=REST_TIMER_JS)
             with gr.Row(elem_classes="set-row"):
                 set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
                 set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
-                # 移除 click 裡的 js 參數，改用全域 JS 控制
                 btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0, elem_classes="set-btn-rest")
+                btn_rest1.load(None, None, None, js=REST_TIMER_JS)
                 
             with gr.Row(elem_classes="set-row"):
                 set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
                 set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
                 btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0, elem_classes="set-btn-rest")
+                btn_rest2.load(None, None, None, js=REST_TIMER_JS)
 
             with gr.Row(elem_classes="set-row"):
                 set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
                 set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
                 btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0, elem_classes="set-btn-rest")
+                btn_rest3.load(None, None, None, js=REST_TIMER_JS)
 
             with gr.Row(elem_classes="set-row"):
                 set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
                 set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
                 btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0, elem_classes="set-btn-rest")
+                btn_rest4.load(None, None, None, js=REST_TIMER_JS)
 
             with gr.Row(elem_classes="set-row"):
                 set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
                 set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
                 btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0, elem_classes="set-btn-rest")
+                btn_rest5.load(None, None, None, js=REST_TIMER_JS)
 
             note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
 
@@ -953,8 +939,8 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 - Total Volume = ∑(kg × r)。
 """)
     
-    # 載入 JavaScript (在所有元件定義之後)
-    demo.load(None, None, None, js=REST_TIMER_JS)
+    # 移除最後這行，因為已經在上面每個按鈕個別綁定了
+    # demo.load(None, None, None, js=REST_TIMER_JS)
 
 if __name__ == "__main__":
     if not RECORDS_CSV.exists():
