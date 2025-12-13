@@ -673,15 +673,20 @@ async () => {
             osc1.stop(t + 1.5);
             osc2.start(t);
             osc2.stop(t + 1.5);
-        } catch(e) { console.error(e); }
+        } catch(e) { console.error("Audio error:", e); }
     };
 
     const setupBtn = (id) => {
-        const container = document.getElementById(id); 
-        if (!container) return;
-        const btn = container.querySelector('button');
-        if (!btn || btn.dataset.setupDone) return;
+        const el = document.getElementById(id);
+        if (!el) return;
         
+        // 嘗試找到真正的 button 元素 (Gradio 的 elem_id 有時在容器上)
+        let btn = (el.tagName === 'BUTTON') ? el : el.querySelector('button');
+        
+        if (!btn) return;
+        if (btn.dataset.setupDone) return;
+        
+        console.log("Setting up Rest Timer for:", id); // 除錯訊息
         btn.dataset.setupDone = "1";
         btn.dataset.status = "idle";
         btn.dataset.timeLeft = "120";
@@ -711,15 +716,23 @@ async () => {
             clearTimeout(pressTimer);
         };
         
+        // 綁定長按與點擊事件
         btn.addEventListener('mousedown', startPress);
-        btn.addEventListener('touchstart', startPress);
+        btn.addEventListener('touchstart', startPress, {passive: true});
         btn.addEventListener('mouseup', endPress);
         btn.addEventListener('touchend', endPress);
         
         btn.addEventListener('click', (e) => {
-            if (isLongPress) return;
-            e.stopPropagation();
-            e.preventDefault();
+            if (isLongPress) {
+                e.stopImmediatePropagation();
+                e.preventDefault();
+                return;
+            }
+            
+            // 阻止 Gradio 預設行為
+            e.stopPropagation(); 
+            // 注意：有些情況下 preventDefault 會導致按鈕無反應，這裡我們先拿掉 preventDefault 試試，
+            // 或僅在執行邏輯後呼叫。
             
             if (btn.dataset.status === "idle") {
                 btn.dataset.status = "running";
@@ -770,19 +783,9 @@ async () => {
         });
     };
 
-    // 輪詢直到所有按鈕都被綁定
-    const interval = setInterval(() => {
-        let allFound = true;
-        ids.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) {
-                setupBtn(id);
-            } else {
-                allFound = false;
-            }
-        });
-        // 注意：這裡我們不清除 interval，因為 Gradio 可能會重建 DOM (例如切換 Tab 時)
-        // 讓它持續運行去檢查是否有未綁定的新按鈕生成 (setupBtn 內有檢查 setupDone 旗標，不會重複綁定)
+    // 持續檢查是否有新按鈕出現 (Gradio 在切換 Tab 時會重建 DOM)
+    setInterval(() => {
+        ids.forEach(id => setupBtn(id));
     }, 1000);
 }
 """
