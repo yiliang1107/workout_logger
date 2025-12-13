@@ -639,73 +639,151 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
         yield ui_hist, ""
 
 # ---------------- JavaScript (Rest Timer) ----------------
-def get_rest_timer_js(elem_id):
-    return f"""
-    (x) => {{
-        // 取得按鈕元素
-        const btn = document.querySelector('#{elem_id} button') || document.querySelector('#{elem_id}');
-        if (!btn) return;
-        
-        // 防止重複點擊
-        if (btn.classList.contains('counting')) return;
-        btn.classList.add('counting');
-        
-        let seconds = 120; // 倒數 120 秒 (2 分鐘)
-        const originalText = "Rest";
-        
-        // 播放提示音 (Web Audio API 模擬拳擊鈴聲)
-        const playSound = () => {{
-            try {{
-                const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                const t = ctx.currentTime;
-                
-                // 模擬鈴聲：混合兩個頻率
-                const osc1 = ctx.createOscillator();
-                const gain1 = ctx.createGain();
-                osc1.connect(gain1);
-                gain1.connect(ctx.destination);
-                osc1.type = 'square'; // 方波較有穿透力
-                osc1.frequency.setValueAtTime(600, t);
-                gain1.gain.setValueAtTime(0.3, t);
-                gain1.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
-                
-                const osc2 = ctx.createOscillator();
-                const gain2 = ctx.createGain();
-                osc2.connect(gain2);
-                gain2.connect(ctx.destination);
-                osc2.type = 'sine';
-                osc2.frequency.setValueAtTime(1000, t);
-                gain2.gain.setValueAtTime(0.2, t);
-                gain2.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
+# 移除原本的 get_rest_timer_js，改用全域載入的 JS
+REST_TIMER_JS = """
+async () => {
+    const ids = ['rest_btn_1', 'rest_btn_2', 'rest_btn_3', 'rest_btn_4', 'rest_btn_5'];
+    
+    const playSound = () => {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const t = ctx.currentTime;
+            
+            const osc1 = ctx.createOscillator();
+            const gain1 = ctx.createGain();
+            osc1.connect(gain1);
+            gain1.connect(ctx.destination);
+            osc1.type = 'square';
+            osc1.frequency.setValueAtTime(600, t);
+            gain1.gain.setValueAtTime(0.3, t);
+            gain1.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+            
+            const osc2 = ctx.createOscillator();
+            const gain2 = ctx.createGain();
+            osc2.connect(gain2);
+            gain2.connect(ctx.destination);
+            osc2.type = 'sine';
+            osc2.frequency.setValueAtTime(1000, t);
+            gain2.gain.setValueAtTime(0.2, t);
+            gain2.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
 
-                osc1.start(t);
-                osc1.stop(t + 1.5);
-                osc2.start(t);
-                osc2.stop(t + 1.5);
-            }} catch(e) {{
-                console.error("Audio play failed", e);
-            }}
-        }};
+            osc1.start(t);
+            osc1.stop(t + 1.5);
+            osc2.start(t);
+            osc2.stop(t + 1.5);
+        } catch(e) { console.error(e); }
+    };
 
-        btn.innerText = seconds + "s";
+    const setupBtn = (id) => {
+        const container = document.getElementById(id); 
+        if (!container) return;
+        const btn = container.querySelector('button');
+        if (!btn || btn.dataset.setupDone) return;
         
-        const timer = setInterval(() => {{
-            seconds--;
-            if (seconds > 0) {{
-                btn.innerText = seconds + "s";
-            }} else {{
-                clearInterval(timer);
-                playSound();
-                btn.innerText = "Time's up";
-                // 3秒後恢復 Rest
-                setTimeout(() => {{
-                    btn.innerText = originalText;
-                    btn.classList.remove('counting');
-                }}, 3000);
-            }}
-        }}, 1000);
-    }}
-    """
+        btn.dataset.setupDone = "1";
+        btn.dataset.status = "idle"; // idle, running, paused
+        btn.dataset.timeLeft = "120";
+        btn.originalText = "Rest";
+        
+        let pressTimer;
+        let isLongPress = false;
+        
+        const resetTimer = () => {
+            if (btn.dataset.timerId) clearInterval(Number(btn.dataset.timerId));
+            btn.dataset.status = "idle";
+            btn.dataset.timeLeft = "120";
+            btn.innerText = "Rest";
+            btn.classList.remove('counting');
+            isLongPress = false;
+        };
+
+        const startPress = () => {
+            isLongPress = false;
+            pressTimer = setTimeout(() => {
+                isLongPress = true;
+                resetTimer();
+            }, 800); // 長按 0.8秒 重置
+        };
+        
+        const endPress = () => {
+            clearTimeout(pressTimer);
+        };
+        
+        // 綁定長按偵測
+        btn.addEventListener('mousedown', startPress);
+        btn.addEventListener('touchstart', startPress);
+        btn.addEventListener('mouseup', endPress);
+        btn.addEventListener('touchend', endPress);
+        
+        // 點擊邏輯 (開始/暫停/繼續)
+        btn.addEventListener('click', (e) => {
+            if (isLongPress) return; // 如果是長按觸發的，忽略點擊事件
+            
+            if (btn.dataset.status === "idle") {
+                // 開始
+                btn.dataset.status = "running";
+                btn.classList.add('counting');
+                btn.innerText = btn.dataset.timeLeft + "s";
+                btn.dataset.timerId = setInterval(() => {
+                    let t = Number(btn.dataset.timeLeft);
+                    t--;
+                    btn.dataset.timeLeft = t;
+                    if (t > 0) {
+                        btn.innerText = t + "s";
+                    } else {
+                        // 時間到
+                        clearInterval(Number(btn.dataset.timerId));
+                        playSound();
+                        btn.innerText = "Time's up";
+                        btn.dataset.status = "finished";
+                        setTimeout(() => {
+                            if (btn.dataset.status === "finished") resetTimer();
+                        }, 3000);
+                    }
+                }, 1000);
+                
+            } else if (btn.dataset.status === "running") {
+                // 暫停
+                btn.dataset.status = "paused";
+                clearInterval(Number(btn.dataset.timerId));
+                btn.innerText = "Paused (" + btn.dataset.timeLeft + "s)";
+                
+            } else if (btn.dataset.status === "paused") {
+                // 繼續
+                btn.dataset.status = "running";
+                btn.innerText = btn.dataset.timeLeft + "s";
+                btn.dataset.timerId = setInterval(() => {
+                    let t = Number(btn.dataset.timeLeft);
+                    t--;
+                    btn.dataset.timeLeft = t;
+                    if (t > 0) {
+                        btn.innerText = t + "s";
+                    } else {
+                        clearInterval(Number(btn.dataset.timerId));
+                        playSound();
+                        btn.innerText = "Time's up";
+                        btn.dataset.status = "finished";
+                        setTimeout(() => {
+                            if (btn.dataset.status === "finished") resetTimer();
+                        }, 3000);
+                    }
+                }, 1000);
+            }
+        });
+    };
+
+    ids.forEach(id => {
+        // 輪詢直到元素出現
+        const interval = setInterval(() => {
+            const el = document.getElementById(id);
+            if (el) {
+                setupBtn(id);
+                clearInterval(interval);
+            }
+        }, 500);
+    });
+}
+"""
 
 # ---------------- CSS ----------------
 CSS = """
@@ -725,23 +803,45 @@ CSS = """
 @media (max-width: 480px) {
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
-/* 新增：計時狀態樣式 (紅底白字) */
+/* 計時狀態樣式 (紅底白字) */
 .counting {
     background-color: #d32f2f !important; 
     color: white !important;
     border: 1px solid #b71c1c !important;
 }
 
-/* 新增：手機版強制不換行 */
+/* 手機版佈局調整 */
 @media (max-width: 480px) {
-  .force-row {
-    flex-wrap: nowrap !important;
-    gap: 4px !important;
-  }
-  /* 稍微縮小輸入框 padding 讓空間多一點 */
-  .force-row .form {
-    min-width: 0 !important;
-  }
+    /* 強制 Row 使用 Flexbox 且允許換行，底部對齊 */
+    .set-row {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+        align-items: flex-end !important; 
+    }
+    
+    /* kg 輸入框佔據整行 (100%) */
+    .set-item-kg {
+        min-width: 100% !important; 
+        flex-basis: 100% !important;
+        margin-bottom: 0px !important;
+    }
+    
+    /* r 輸入框佔據剩餘空間 */
+    .set-item-r {
+        flex-grow: 1 !important; 
+        min-width: 0 !important;
+        margin-bottom: 0px !important;
+    }
+    
+    /* Rest 按鈕固定寬度，不換行，跟在 r 後面 */
+    .set-btn-rest {
+        flex-grow: 0 !important;
+        width: auto !important;
+        min-width: 70px !important;
+        height: 44px !important; /* 調整高度以配合輸入框 */
+        margin-bottom: 0px !important;
+    }
 }
 """
 
@@ -763,36 +863,32 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 
             item_dd = gr.Dropdown(choices=get_all_item_choices(), allow_custom_value=True, value=None, label="Item 名稱")
 
-            # 修改這 5 個 Row，加上 elem_classes="force-row"
-            with gr.Row(elem_classes="force-row"):
-                set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
-                set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r")
-                btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0)
-                btn_rest1.click(None, None, None, js=get_rest_timer_js("rest_btn_1"))
+            # 修改這 5 個 Row，加入對應的 elem_classes
+            with gr.Row(elem_classes="set-row"):
+                set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
+                set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                # 移除 click 裡的 js 參數，改用全域 JS 控制
+                btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0, elem_classes="set-btn-rest")
+                
+            with gr.Row(elem_classes="set-row"):
+                set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
+                set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0, elem_classes="set-btn-rest")
 
-            with gr.Row(elem_classes="force-row"):
-                set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg")
-                set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r")
-                btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0)
-                btn_rest2.click(None, None, None, js=get_rest_timer_js("rest_btn_2"))
+            with gr.Row(elem_classes="set-row"):
+                set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
+                set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0, elem_classes="set-btn-rest")
 
-            with gr.Row(elem_classes="force-row"):
-                set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg")
-                set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r")
-                btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0)
-                btn_rest3.click(None, None, None, js=get_rest_timer_js("rest_btn_3"))
+            with gr.Row(elem_classes="set-row"):
+                set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
+                set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0, elem_classes="set-btn-rest")
 
-            with gr.Row(elem_classes="force-row"):
-                set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg")
-                set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r")
-                btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0)
-                btn_rest4.click(None, None, None, js=get_rest_timer_js("rest_btn_4"))
-
-            with gr.Row(elem_classes="force-row"):
-                set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg")
-                set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r")
-                btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0)
-                btn_rest5.click(None, None, None, js=get_rest_timer_js("rest_btn_5"))
+            with gr.Row(elem_classes="set-row"):
+                set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
+                set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0, elem_classes="set-btn-rest")
 
             note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
 
@@ -830,6 +926,9 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
             refresh_btn.click(lambda: gr.update(choices=get_all_item_choices()), None, q_item)
 
             query_btn.click(search_records_html, inputs=[q_from, q_to, q_item], outputs=out_html)
+
+            # 載入 JavaScript (在 Records 分頁之後或 Blocks 最後面)
+            demo.load(None, None, None, js=REST_TIMER_JS)
 
         with gr.TabItem("你的教練"):
             chatbot = gr.Chatbot(height=420, type='messages')
