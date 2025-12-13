@@ -638,6 +638,75 @@ def coach_chat_stream_ctx(history, user_msg: str, use_ctx: bool, ctx_days: int):
         ui_hist = ui_hist + [{"role": "user", "content": msg}, {"role": "assistant", "content": f"抱歉，Groq 呼叫失敗：{e}"}]
         yield ui_hist, ""
 
+# ---------------- JavaScript (Rest Timer) ----------------
+def get_rest_timer_js(elem_id):
+    return f"""
+    (x) => {{
+        // 取得按鈕元素
+        const btn = document.querySelector('#{elem_id} button') || document.querySelector('#{elem_id}');
+        if (!btn) return;
+        
+        // 防止重複點擊
+        if (btn.classList.contains('counting')) return;
+        btn.classList.add('counting');
+        
+        let seconds = 120; // 倒數 120 秒 (2 分鐘)
+        const originalText = "Rest";
+        
+        // 播放提示音 (Web Audio API 模擬拳擊鈴聲)
+        const playSound = () => {{
+            try {{
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const t = ctx.currentTime;
+                
+                // 模擬鈴聲：混合兩個頻率
+                const osc1 = ctx.createOscillator();
+                const gain1 = ctx.createGain();
+                osc1.connect(gain1);
+                gain1.connect(ctx.destination);
+                osc1.type = 'square'; // 方波較有穿透力
+                osc1.frequency.setValueAtTime(600, t);
+                gain1.gain.setValueAtTime(0.3, t);
+                gain1.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+                
+                const osc2 = ctx.createOscillator();
+                const gain2 = ctx.createGain();
+                osc2.connect(gain2);
+                gain2.connect(ctx.destination);
+                osc2.type = 'sine';
+                osc2.frequency.setValueAtTime(1000, t);
+                gain2.gain.setValueAtTime(0.2, t);
+                gain2.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
+
+                osc1.start(t);
+                osc1.stop(t + 1.5);
+                osc2.start(t);
+                osc2.stop(t + 1.5);
+            }} catch(e) {{
+                console.error("Audio play failed", e);
+            }}
+        }};
+
+        btn.innerText = seconds + "s";
+        
+        const timer = setInterval(() => {{
+            seconds--;
+            if (seconds > 0) {{
+                btn.innerText = seconds + "s";
+            }} else {{
+                clearInterval(timer);
+                playSound();
+                btn.innerText = "Time's up";
+                // 3秒後恢復 Rest
+                setTimeout(() => {{
+                    btn.innerText = originalText;
+                    btn.classList.remove('counting');
+                }}, 3000);
+            }}
+        }}, 1000);
+    }}
+    """
+
 # ---------------- CSS ----------------
 CSS = """
 .records-cards { display: grid; gap: 10px; }
@@ -679,18 +748,32 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
             with gr.Row():
                 set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
                 set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r")
+                btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0)
+                btn_rest1.click(None, None, None, js=get_rest_timer_js("rest_btn_1"))
+
             with gr.Row():
                 set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg")
                 set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r")
+                btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0)
+                btn_rest2.click(None, None, None, js=get_rest_timer_js("rest_btn_2"))
+
             with gr.Row():
                 set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg")
                 set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r")
+                btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0)
+                btn_rest3.click(None, None, None, js=get_rest_timer_js("rest_btn_3"))
+
             with gr.Row():
                 set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg")
                 set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r")
+                btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0)
+                btn_rest4.click(None, None, None, js=get_rest_timer_js("rest_btn_4"))
+
             with gr.Row():
                 set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg")
                 set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r")
+                btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0)
+                btn_rest5.click(None, None, None, js=get_rest_timer_js("rest_btn_5"))
 
             note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
 
