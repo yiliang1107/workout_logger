@@ -841,6 +841,36 @@ CSS = """
         margin-bottom: 0px !important;
     }
 }
+
+/* 電腦版佈局調整：讓 r 和 Rest 緊貼 */
+@media (min-width: 481px) {
+    .set-row {
+        display: flex !important;
+        align-items: flex-start !important; /* 對齊頂部，避免高度拉伸 */
+        gap: 15px !important;
+    }
+    /* kg 輸入框佔 50% */
+    .set-item-kg {
+        flex: 1 1 50% !important;
+        min-width: 0 !important;
+    }
+    /* r 和 Rest 的容器佔 50%，並設為 Flex */
+    .set-right-group {
+        flex: 1 1 50% !important;
+        display: flex !important;
+        gap: 8px !important;
+        align-items: flex-end !important; /* 底部對齊，讓按鈕跟輸入框底部切齊 */
+    }
+    .set-item-r {
+        flex-grow: 1 !important;
+    }
+    .set-btn-rest {
+        flex-grow: 0 !important;
+        width: auto !important;
+        min-width: 80px !important;
+        margin-bottom: 2px !important; /* 微調高度對齊 */
+    }
+}
 """
 
 # ---------------- 介面 ----------------
@@ -861,31 +891,36 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 
             item_dd = gr.Dropdown(choices=get_all_item_choices(), allow_custom_value=True, value=None, label="Item 名稱")
 
-            # 修改這 5 個 Row，**移除** .load() 呼叫
+            # 修改這 5 個 Row，將 r 和 Rest 包在一個內部的 Row (set-right-group)
             with gr.Row(elem_classes="set-row"):
                 set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
-                set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
-                btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0, elem_classes="set-btn-rest")
+                with gr.Row(elem_classes="set-right-group"): # 這是一個內部的 Row，用來包 r 和 Rest
+                    set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                    btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0, elem_classes="set-btn-rest")
                 
             with gr.Row(elem_classes="set-row"):
                 set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
-                set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
-                btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0, elem_classes="set-btn-rest")
+                with gr.Row(elem_classes="set-right-group"):
+                    set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                    btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0, elem_classes="set-btn-rest")
 
             with gr.Row(elem_classes="set-row"):
                 set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
-                set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
-                btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0, elem_classes="set-btn-rest")
+                with gr.Row(elem_classes="set-right-group"):
+                    set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                    btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0, elem_classes="set-btn-rest")
 
             with gr.Row(elem_classes="set-row"):
                 set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
-                set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
-                btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0, elem_classes="set-btn-rest")
+                with gr.Row(elem_classes="set-right-group"):
+                    set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                    btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0, elem_classes="set-btn-rest")
 
             with gr.Row(elem_classes="set-row"):
                 set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg", elem_classes="set-item-kg")
-                set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
-                btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0, elem_classes="set-btn-rest")
+                with gr.Row(elem_classes="set-right-group"):
+                    set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r", elem_classes="set-item-r")
+                    btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0, elem_classes="set-btn-rest")
 
             note_in = gr.Textbox(label="Note", placeholder="RPE、感覺、下次調整…")
 
