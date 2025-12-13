@@ -725,6 +725,12 @@ CSS = """
 @media (max-width: 480px) {
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
+/* 新增：計時狀態樣式 (紅底白字) */
+.counting {
+    background-color: #d32f2f !important; 
+    color: white !important;
+    border: 1px solid #b71c1c !important;
+}
 """
 
 # ---------------- 介面 ----------------
