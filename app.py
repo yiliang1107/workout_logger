@@ -725,6 +725,24 @@ CSS = """
 @media (max-width: 480px) {
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
+/* 新增：計時狀態樣式 (紅底白字) */
+.counting {
+    background-color: #d32f2f !important; 
+    color: white !important;
+    border: 1px solid #b71c1c !important;
+}
+
+/* 新增：手機版強制不換行 */
+@media (max-width: 480px) {
+  .force-row {
+    flex-wrap: nowrap !important;
+    gap: 4px !important;
+  }
+  /* 稍微縮小輸入框 padding 讓空間多一點 */
+  .force-row .form {
+    min-width: 0 !important;
+  }
+}
 """
 
 # ---------------- 介面 ----------------
@@ -745,31 +763,32 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
 
             item_dd = gr.Dropdown(choices=get_all_item_choices(), allow_custom_value=True, value=None, label="Item 名稱")
 
-            with gr.Row():
+            # 修改這 5 個 Row，加上 elem_classes="force-row"
+            with gr.Row(elem_classes="force-row"):
                 set1kg = gr.Number(label="Set 1 — kg", precision=2, value=None, placeholder="kg")
                 set1rp = gr.Number(label="Set 1 — r", precision=0, value=None, placeholder="r")
                 btn_rest1 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_1", scale=0)
                 btn_rest1.click(None, None, None, js=get_rest_timer_js("rest_btn_1"))
 
-            with gr.Row():
+            with gr.Row(elem_classes="force-row"):
                 set2kg = gr.Number(label="Set 2 — kg", precision=2, value=None, placeholder="kg")
                 set2rp = gr.Number(label="Set 2 — r", precision=0, value=None, placeholder="r")
                 btn_rest2 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_2", scale=0)
                 btn_rest2.click(None, None, None, js=get_rest_timer_js("rest_btn_2"))
 
-            with gr.Row():
+            with gr.Row(elem_classes="force-row"):
                 set3kg = gr.Number(label="Set 3 — kg", precision=2, value=None, placeholder="kg")
                 set3rp = gr.Number(label="Set 3 — r", precision=0, value=None, placeholder="r")
                 btn_rest3 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_3", scale=0)
                 btn_rest3.click(None, None, None, js=get_rest_timer_js("rest_btn_3"))
 
-            with gr.Row():
+            with gr.Row(elem_classes="force-row"):
                 set4kg = gr.Number(label="Set 4 — kg", precision=2, value=None, placeholder="kg")
                 set4rp = gr.Number(label="Set 4 — r", precision=0, value=None, placeholder="r")
                 btn_rest4 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_4", scale=0)
                 btn_rest4.click(None, None, None, js=get_rest_timer_js("rest_btn_4"))
 
-            with gr.Row():
+            with gr.Row(elem_classes="force-row"):
                 set5kg = gr.Number(label="Set 5 — kg", precision=2, value=None, placeholder="kg")
                 set5rp = gr.Number(label="Set 5 — r", precision=0, value=None, placeholder="r")
                 btn_rest5 = gr.Button("Rest", size="sm", min_width=60, elem_id="rest_btn_5", scale=0)
