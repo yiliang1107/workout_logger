@@ -31,7 +31,7 @@ except ImportError:
 
 # ---------------- 常數 ----------------
 APP_TITLE = "Workout Logger"
-APP_VERSION = "v1.2"  # Update: 移除時區註記，恢復簡潔
+APP_VERSION = "v1.3"  # Update: 更新版本號以觸發部署
 RECORDS_CSV = Path("workout_records.csv")
 ITEMS_JSON = Path("known_items.json")
 NUM_SETS = 5
