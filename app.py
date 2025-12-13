@@ -476,7 +476,7 @@ def save_button_clicked(date_str: str, item_name: str,
 
     merged = get_all_item_choices()
     latest = load_records_df()
-    latest_html = df_to_html_compact5(latest.tail(20)) if latest is not None and not latest.empty else ""
+    latest_html = df_to_html_compact5(latest.tail(20).iloc[::-1]) if latest is not None and not latest.empty else ""
     return (msg, gr.update(choices=merged), latest_html, gr.update(interactive=True), cloud_status_line())
 
 # ---------------- 搜尋 ----------------
@@ -725,12 +725,6 @@ CSS = """
 @media (max-width: 480px) {
   .rec-sets td.kg, .rec-sets td.r { width: 48px; }
 }
-/* 新增：計時狀態樣式 (紅底白字) */
-.counting {
-    background-color: #d32f2f !important; 
-    color: white !important;
-    border: 1px solid #b71c1c !important;
-}
 """
 
 # ---------------- 介面 ----------------
@@ -786,7 +780,7 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
             save_btn = gr.Button("💾 Save", variant="primary")
             status_md = gr.Markdown("")
             cur = load_records_df()
-            latest_html = gr.HTML(value=(df_to_html_compact5(cur.tail(20)) if (cur is not None and not cur.empty) else ""), label="最近 20 筆紀錄")
+            latest_html = gr.HTML(value=(df_to_html_compact5(cur.tail(20).iloc[::-1]) if (cur is not None and not cur.empty) else ""), label="最近 20 筆紀錄")
 
             save_btn.click(
                 fn=save_button_clicked,
@@ -811,7 +805,7 @@ with gr.Blocks(title=f"{APP_TITLE} {APP_VERSION}", theme=gr.themes.Soft(), css=C
                 )
             refresh_btn = gr.Button("🔄 更新選單")
             query_btn = gr.Button("🔎 Search")
-            out_html = gr.HTML(value=df_to_html_compact5(load_records_df()), label="搜尋結果")
+            out_html = gr.HTML(value=search_records_html("", "", ""), label="搜尋結果")
 
             # 刷新下拉選單內容
             refresh_btn.click(lambda: gr.update(choices=get_all_item_choices()), None, q_item)
